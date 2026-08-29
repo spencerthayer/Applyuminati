@@ -1,0 +1,98 @@
+# Publishes the container image referenced by docker-compose.yml.
+#
+# THIS WORKFLOW IS WHAT MAKES THE PASTEABLE COMPOSE FILE REAL. docker-compose.yml
+# deliberately has no `build:` key, because Portainer's web editor has no build
+# context; it references ghcr.io/<owner>/applyuminati:latest instead. That tag
+# only exists because this workflow pushes it on every merge to main. If this
+# workflow breaks or is removed, every Portainer deployment silently pins to a
+# stale image -- or, on a first deploy, fails to pull at all.
+#
+# Multi-arch (amd64 + arm64) is not a nicety either: the target audience runs
+# this on both x86 home servers and Apple Silicon / Raspberry Pi hosts, and a
+# single-arch image would fail to pull on half of them.
+
+name: Release
+
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required to push to the GitHub Container Registry.
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/applyuminati
+
+jobs:
+  publish:
+    name: Build and push multi-arch image
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU provides the arm64 emulation the cross-build needs on an amd64
+      # runner. Without it the linux/arm64 platform silently cannot be built.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `latest` on main; full semver ladder on a v* tag, so a user can pin
+      # APPLYUMINATI_TAG to 1, 1.2 or 1.2.3 with the precision they want.
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=sha,format=short
+          labels: |
+            org.opencontainers.image.title=Applyuminati
+            org.opencontainers.image.description=Local-first, autonomous, LLM-powered job search and application platform.
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Shared with CI's docker job, so a merge usually reuses the layers
+          # the pull request already built.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Deploy with docker-compose.yml (no changes needed for \`latest\`)."
+          } >> "$GITHUB_STEP_SUMMARY"

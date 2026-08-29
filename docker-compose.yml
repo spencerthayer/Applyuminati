@@ -1,0 +1,142 @@
+# =============================================================================
+# Applyuminati -- deployable stack
+# =============================================================================
+#
+# PORTAINER USERS, READ THIS AND NOTHING ELSE:
+#
+#   1. Stacks -> Add stack -> Web editor, and paste this entire file.
+#   2. Optional. Under "Environment variables" set:
+#        APPLYUMINATI_PORT   the port you want on the host (default 8420)
+#        APPLYUMINATI_LLM__PROVIDERS__OPENAI__API_KEY   an LLM key, if you have one
+#      Everything else already has a working default. You may skip this step.
+#   3. Deploy the stack.
+#   4. Open http://<your-host>:8420  -- the UI and the API are both there.
+#
+# That is the whole procedure. There is no build step, no second container, no
+# .env file, and no host directory to prepare.
+#
+# Why this file has no `build:` key and no bind mounts: Portainer's web editor
+# has no build context and no guaranteed host paths. So the stack references a
+# published image built by .github/workflows/release.yml, and all state lives in
+# the named volume `applyuminati-data`. Every variable below carries an inline
+# `${VAR:-default}`, so pasting this file unmodified produces a working stack.
+#
+# The single container serves the React UI at "/" and the JSON API at
+# "/api/v1" from the same origin. That is why one published port is enough and
+# why there is no CORS setting or build-time API URL to get wrong.
+#
+# For local development use docker-compose.dev.yml instead; it builds from
+# source with hot reload. This file is the one you deploy.
+# =============================================================================
+
+services:
+  applyuminati:
+    image: ghcr.io/spencerthayer/applyuminati:${APPLYUMINATI_TAG:-latest}
+    container_name: ${APPLYUMINATI_CONTAINER_NAME:-applyuminati}
+    restart: unless-stopped
+
+    # Host port : container port. Change the left-hand side only; the internal
+    # port is driven by APPLYUMINATI_INTERNAL_PORT below and both the app and
+    # the healthcheck read the same value, so they cannot drift apart.
+    ports:
+      - "${APPLYUMINATI_PORT:-8420}:${APPLYUMINATI_INTERNAL_PORT:-8000}"
+
+    # All persistent state -- SQLite database, artifacts, generated documents,
+    # config.toml -- lives here. A named volume, not a bind mount, so the stack
+    # does not assume anything about the host filesystem.
+    volumes:
+      - applyuminati-data:/data
+
+    # Lets the Ollama example below reach a model server running on the Docker
+    # host. Harmless when unused; required on Linux, where host.docker.internal
+    # does not otherwise resolve.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    environment:
+      # --- storage and runtime ------------------------------------------
+      # Must match the volume mount above.
+      APPLYUMINATI_DATA_DIR: /data
+      APPLYUMINATI_ENVIRONMENT: docker
+      APPLYUMINATI_LOG_LEVEL: ${APPLYUMINATI_LOG_LEVEL:-INFO}
+      # json is the right default in a container: Portainer, Loki and friends
+      # parse it. Use "console" if you are reading the logs by eye.
+      APPLYUMINATI_LOG_FORMAT: ${APPLYUMINATI_LOG_FORMAT:-json}
+
+      # How far the system may act without asking. Ordered least to most
+      # autonomous: research_only | prepare_application | fill_no_submit |
+      # autonomous_submit. research_only is the safe default and never submits
+      # anything anywhere; raising it is an explicit, deliberate act.
+      APPLYUMINATI_EXECUTION_MODE: ${APPLYUMINATI_EXECUTION_MODE:-research_only}
+
+      # --- http server --------------------------------------------------
+      # 0.0.0.0 is required inside a container: the default 127.0.0.1 would only
+      # be reachable from within the container itself.
+      APPLYUMINATI_SERVER__HOST: ${APPLYUMINATI_SERVER__HOST:-0.0.0.0}
+      APPLYUMINATI_SERVER__PORT: "${APPLYUMINATI_INTERNAL_PORT:-8000}"
+
+      # --- LLM ----------------------------------------------------------
+      # true means "use LLM enrichment when a provider is configured". With no
+      # provider configured the system stays fully functional and falls back to
+      # its deterministic behaviour, so this is safe to leave on.
+      APPLYUMINATI_LLM__ENABLED: "${APPLYUMINATI_LLM__ENABLED:-true}"
+
+      # Name of the provider entry to use by default. Leave EMPTY unless you
+      # actually configure a provider below: naming a provider that does not
+      # exist is a configuration error and the container will refuse to start.
+      # With exactly one provider configured this is inferred automatically.
+      APPLYUMINATI_LLM__DEFAULT_PROVIDER: ${APPLYUMINATI_LLM__DEFAULT_PROVIDER:-}
+
+      # Optional hard spend ceiling per run, in USD. Empty means unlimited.
+      # APPLYUMINATI_LLM__RUN_BUDGET_USD: "5.0"
+
+      # --- LLM provider example: OpenAI ---------------------------------
+      # Uncomment these four lines and paste your key to enable OpenAI. The
+      # "OPENAI" segment is just the provider's name; the trailing segments are
+      # its settings. Note the DOUBLE underscores between levels.
+      #
+      # APPLYUMINATI_LLM__DEFAULT_PROVIDER: openai
+      # APPLYUMINATI_LLM__PROVIDERS__OPENAI__KIND: openai_compatible
+      # APPLYUMINATI_LLM__PROVIDERS__OPENAI__BASE_URL: https://api.openai.com/v1
+      # APPLYUMINATI_LLM__PROVIDERS__OPENAI__API_KEY: sk-your-key-here
+      # APPLYUMINATI_LLM__PROVIDERS__OPENAI__DEFAULT_MODEL: gpt-4o-mini
+
+      # --- LLM provider example: Ollama on the Docker host --------------
+      # No API key, no cloud, no cost. Requires Ollama running on the host with
+      # the model already pulled (`ollama pull llama3.1:8b`). host.docker.internal
+      # is what makes the container able to see it -- see extra_hosts above.
+      #
+      # APPLYUMINATI_LLM__DEFAULT_PROVIDER: ollama
+      # APPLYUMINATI_LLM__PROVIDERS__OLLAMA__KIND: openai_compatible
+      # APPLYUMINATI_LLM__PROVIDERS__OLLAMA__BASE_URL: http://host.docker.internal:11434/v1
+      # APPLYUMINATI_LLM__PROVIDERS__OLLAMA__API_KEY: ollama
+      # APPLYUMINATI_LLM__PROVIDERS__OLLAMA__DEFAULT_MODEL: llama3.1:8b
+
+    # Uses the Python already in the image; no curl or wget is installed.
+    # urlopen raises on any non-2xx response, which is the failure signal.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:${APPLYUMINATI_INTERNAL_PORT:-8000}/api/v1/health', timeout=4)
+      interval: 30s
+      timeout: 5s
+      # Generous: the first start runs database migrations before listening.
+      start_period: 40s
+      retries: 3
+
+    labels:
+      org.opencontainers.image.title: "Applyuminati"
+      org.opencontainers.image.description: >-
+        Local-first, autonomous, LLM-powered job search and application
+        platform. UI and API on one port; all state in the applyuminati-data
+        volume.
+      org.opencontainers.image.source: "https://github.com/spencerthayer/Applyuminati"
+      com.applyuminati.role: "all-in-one"
+
+volumes:
+  # Delete this volume and you delete your job search: the SQLite database,
+  # every generated resume and every captured artifact live in it. Back it up.
+  applyuminati-data:
+    name: ${APPLYUMINATI_VOLUME_NAME:-applyuminati-data}

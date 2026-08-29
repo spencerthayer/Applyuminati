@@ -1,0 +1,64 @@
+# Keep the build context small and the image layers cache-stable.
+#
+# Everything the image genuinely needs is an explicit COPY in the Dockerfile:
+# pyproject.toml, uv.lock, README.md, LICENSE, alembic.ini, src/ and apps/web/.
+# Anything not needed for those is excluded here, so touching a local database
+# or a node_modules tree never invalidates a dependency layer.
+
+# VCS and CI metadata
+.git
+.gitignore
+.github
+.pre-commit-config.yaml
+
+# Local environment and secrets -- must never enter an image layer
+.env
+.env.*
+!.env.example
+.envrc
+
+# Python build/test detritus
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# Tests are not shipped in the runtime image
+tests/
+
+# Node artefacts: reinstalled inside the web build stage from the lockfile
+node_modules/
+apps/web/node_modules/
+apps/web/dist/
+apps/web/.vite/
+npm-debug.log*
+
+# Local runtime data -- never bake a database into an image
+.data/
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Container/compose files are not needed inside the image
+Dockerfile
+.dockerignore
+docker-compose*.yml
+
+# Editor and OS noise
+.idea/
+.vscode/
+.DS_Store
+*.swp

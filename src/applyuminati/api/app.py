@@ -101,7 +101,7 @@ def _mount_static(app: FastAPI, container: ServiceContainer) -> None:
 
     index = dist / "index.html"
 
-    @app.get("/{path:path}", include_in_schema=False)
+    @app.get("/{path:path}", include_in_schema=False, response_model=None)
     async def spa(path: str) -> FileResponse | JSONResponse:
         # Try to serve a real file first; fall back to index.html for client-side routing.
         candidate = dist / path

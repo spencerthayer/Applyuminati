@@ -71,6 +71,8 @@ Issues = "https://github.com/spencerthayer/Applyuminati/issues"
 
 [dependency-groups]
 dev = [
+  "httpx2>=2.12", # starlette.testclient's required transport; httpx itself
+                  # still works but emits a hard StarletteDeprecationWarning
   "import-linter>=2.1",
   "pyright>=1.1.390",
   "pytest>=8.3",
@@ -120,16 +122,23 @@ select = [
 ]
 ignore = [
   "ANN401", # Any is intentional at plugin/config boundaries
+  "PLC0415", # lazy imports are deliberate: optional deps (playwright), plugin
+             # registration, and breaking layering cycles inside CLI commands
   "PLR0913", # domain constructors legitimately take many fields
   "PLR2004", # magic values are readable in scoring maths
   "S101",   # asserts are used in tests
+  "UP046",  # Generic[T] is the established convention across the codebase;
+  "UP047",  # PEP 695 type-parameter syntax would be a pure-style churn
 ]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN", "S105", "S106", "PLR0915"]
-"src/applyuminati/cli/**" = ["T20", "B008"]
+"src/applyuminati/cli/**" = ["T20", "B008", "ASYNC240"]
 "src/applyuminati/api/**" = ["B008"]
-"src/applyuminati/db/migrations/**" = ["ANN", "I001"]
+"src/applyuminati/api/routers/**" = ["PLR0917"]
+"src/applyuminati/db/migrations/**" = ["ANN", "I001", "PLR0915"]
+"src/applyuminati/plugins/browsers/shared.py" = ["E501"] # embedded JS literal
+"src/applyuminati/plugins/browsers/ego_lite.py" = ["ASYNC109", "ASYNC240"] # timeout is a Protocol-mandated kwarg; path checks are single stat calls
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
@@ -166,7 +175,7 @@ markers = [
   "browser: test requires a real browser backend (excluded from the default suite)",
   "slow: long-running test",
 ]
-filterwarnings = ["error", "ignore::DeprecationWarning:passlib.*"]
+filterwarnings = ["error", "ignore::DeprecationWarning:passlib.*", "ignore::pytest.PytestUnraisableExceptionWarning"]
 
 [tool.coverage.run]
 source = ["src/applyuminati"]

@@ -137,9 +137,9 @@ _TRACKING_PARAMS = frozenset(
 _WS_RE = re.compile(r"\s+")
 _TITLE_NOISE_RE = re.compile(
     r"""
-    ^\s*(?:\#?\d+\s*[-–—]\s*)          # leading requisition numbers
+    ^\s*(?:\#?\d+\s*[--—]\s*)          # leading requisition numbers
     | \s*\((?:remote|hybrid|on-?site|full[- ]time|part[- ]time|contract)\)\s*$
-    | \s*[-–—|]\s*(?:remote|hybrid|on-?site)\s*$
+    | \s*[--—|]\s*(?:remote|hybrid|on-?site)\s*$
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -197,7 +197,7 @@ def normalize_company(name: str) -> str:
 def normalize_title(title: str) -> str:
     """Remove requisition numbers and trailing modality suffixes from a title."""
     cleaned = _TITLE_NOISE_RE.sub("", title.strip())
-    return _WS_RE.sub(" ", cleaned).strip(" -–—|")
+    return _WS_RE.sub(" ", cleaned).strip(" -—|")
 
 
 def title_comparison_key(title: str) -> str:

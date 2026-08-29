@@ -93,7 +93,7 @@ class PluginDescriptor(Generic[T]):
     #: Where the plugin came from: ``builtin`` or an entry-point distribution.
     origin: str = "builtin"
 
-    def create(self, **kwargs: Any) -> T:  # noqa: ANN401 - plugin-defined kwargs
+    def create(self, **kwargs: Any) -> T:
         return self.factory(**kwargs)
 
     def validate_options(self, options: dict[str, Any]) -> BaseModel | None:
@@ -161,11 +161,9 @@ class Registry(Generic[T]):
         origin = getattr(entry_point.dist, "name", "unknown") if entry_point.dist else "unknown"
         try:
             loaded = entry_point.load()
-        except Exception as exc:  # noqa: BLE001 - a broken plugin must not break startup
+        except Exception as exc:
             self._load_errors.append(
-                LoadError(
-                    slug=entry_point.name, kind=self.kind, origin=origin, message=str(exc)
-                )
+                LoadError(slug=entry_point.name, kind=self.kind, origin=origin, message=str(exc))
             )
             return
         if not isinstance(loaded, PluginDescriptor):

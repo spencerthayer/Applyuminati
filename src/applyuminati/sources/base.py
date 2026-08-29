@@ -273,7 +273,7 @@ def source_plugin(
     *,
     slug: str,
     name: str,
-    factory: Any,  # noqa: ANN401 - plugin constructors vary
+    factory: Any,
     description: str = "",
     capabilities: frozenset[SourceCapability] = frozenset(),
     options_schema: type[BaseModel] | None = None,

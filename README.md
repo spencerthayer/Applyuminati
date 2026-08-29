@@ -1,2 +1,193 @@
 # Applyuminati
-Applyuminati is an AI-powered job search and application assistant that finds relevant roles, evaluates fit, researches employers, and helps tailor applications, built by the Job Hunt Cabal.
+
+Applyuminati is a local-first, autonomous, LLM-powered job search and application platform. It discovers jobs across many sources, evaluates them against a canonical career profile, researches companies, tailors resumes without fabricating facts, navigates employer application systems, and tracks the complete application lifecycle — all on your machine.
+
+Built by the Job Hunt Cabal.
+
+## Current implementation status
+
+This is the **foundation PR**. It establishes the architecture and a working vertical slice, not the full vision.
+
+### Implemented
+
+- **Canonical career profile** with JSON Resume import/export and a derived claim ledger (verified facts with provenance)
+- **Job discovery** via a plugin architecture with two direct-ATS sources (Greenhouse, Lever) and a local file feed
+- **Job normalization and deduplication** — one opening seen through three channels becomes one row with three provenance records
+- **Deterministic scoring engine** with 11 dimensions, hard-blocker caps, and inspectable evidence
+- **Optional LLM scoring enrichment** through a provider-agnostic abstraction (OpenAI, Anthropic, Gemini, Ollama)
+- **Application state machine** with 20 states, auditable event log, and idempotency guard
+- **Memory architecture** — nine categories, learning from user edits, outcomes recorded without asserting causation
+- **Browser abstraction** — Ego Lite (preferred, macOS) and Playwright (portable) with honest health detection
+- **External agent runtime adapters** — Codex, Claude Code, OpenCode, Pi, Oh My Pi
+- **Email provider abstraction** — IMAP adapter with deterministic classification
+- **FastAPI v1 API** serving the React UI and JSON API from one origin
+- **Typer CLI** calling the same services as the API
+- **React + TypeScript web UI** — Dashboard, Jobs, Job Detail, Profile, Settings
+- **Durable task queue** with self-healing recovery policy
+- **Docker Compose** — one image, one port, pasteable into Portainer
+
+### Planned (architecture ready, not yet implemented)
+
+- Autonomous application submission (browser + questionnaire answering)
+- Company research collection and caching
+- Email inbox monitoring and status inference
+- Resume rendering to PDF/DOCX
+- Vector-based memory retrieval
+- PostgreSQL + pgvector backend
+- Additional job sources (LinkedIn, Indeed, Glassdoor, Workday, Ashby, etc.)
+
+## Architecture overview
+
+```
+apps/          CLI and API entry points, web UI
+packages/     core domain, contracts, persistence, services
+plugins/      concrete adapters (sources, LLM, browser, agents, email)
+```
+
+**Dependency direction** (enforced by import-linter in CI):
+
+```
+CLI / API  →  services  →  plugins  →  {sources, scoring, resume, llm, browser, agents, email, tasks, applications, memory}  →  db  →  core
+```
+
+Core domain logic never imports vendors, frameworks, or databases. Plugins depend on contracts, never the reverse.
+
+## Quick start
+
+```bash
+# Install dependencies
+uv sync --all-extras --dev
+
+# Initialise the data directory
+uv run applyuminati init
+
+# Run database migrations
+uv run alembic upgrade head
+
+# Start the API server
+uv run applyuminati serve
+```
+
+Open http://127.0.0.1:8000 — the UI and API are both there.
+
+## Docker quick start
+
+```bash
+docker compose -f docker-compose.dev.yml up --build
+```
+
+Or paste `docker-compose.yml` into Portainer's stack editor for a production deployment. See the comments at the top of that file.
+
+## JSON Resume import
+
+```bash
+# Import a JSON Resume file
+uv run applyuminati profile import resume.json
+
+# Export the current profile
+uv run applyuminati profile export resume.json
+```
+
+Or use the Profile page in the web UI to paste or upload a `resume.json`.
+
+## CLI examples
+
+```bash
+# Check that everything works
+uv run applyuminati doctor
+
+# Enable a source
+uv run applyuminati sources enable greenhouse
+
+# Discover jobs
+uv run applyuminati jobs discover
+
+# List discovered jobs
+uv run applyuminati jobs list
+
+# Score jobs against your profile
+uv run applyuminati jobs score
+
+# Use LLM enrichment (requires a configured provider)
+uv run applyuminati jobs score --llm
+
+# Show pipeline status
+uv run applyuminati status
+```
+
+## Provider configuration
+
+Applyuminati works with **zero providers configured** — all scoring and discovery is deterministic. To enable LLM enrichment:
+
+### Environment variables
+
+```bash
+# OpenAI
+export APPLYUMINATI_LLM__DEFAULT_PROVIDER=openai
+export APPLYUMINATI_LLM__PROVIDERS__OPENAI__KIND=openai_compatible
+export APPLYUMINATI_LLM__PROVIDERS__OPENAI__API_KEY=sk-your-key
+export APPLYUMINATI_LLM__PROVIDERS__OPENAI__DEFAULT_MODEL=gpt-4o-mini
+
+# Ollama (local, no API key needed)
+export APPLYUMINATI_LLM__DEFAULT_PROVIDER=ollama
+export APPLYUMINATI_LLM__PROVIDERS__OLLAMA__KIND=openai_compatible
+export APPLYUMINATI_LLM__PROVIDERS__OLLAMA__BASE_URL=http://localhost:11434/v1
+export APPLYUMINATI_LLM__PROVIDERS__OLLAMA__DEFAULT_MODEL=llama3.1:8b
+```
+
+### Config file
+
+Create `~/.applyuminati/config.toml`:
+
+```toml
+[llm]
+default_provider = "openai"
+
+[llm.providers.openai]
+kind = "openai_compatible"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-your-key"
+default_model = "gpt-4o-mini"
+```
+
+## Project roadmap
+
+1. **Autonomous application execution** — browser-driven form filling and submission through ATS workflows
+2. **Company research** — automated collection and caching with freshness tracking
+3. **Email monitoring** — inbox scanning, status inference, reply drafting
+4. **Additional sources** — LinkedIn, Indeed, Glassdoor, Workday, Ashby, SmartRecruiters
+5. **Resume rendering** — PDF, DOCX, LaTeX templates
+6. **Learning loop** — feedback from outcomes into scoring and generation
+7. **Multi-profile support** — multiple career targets per installation
+
+## Security and privacy
+
+- **Local-first.** Your career data, credentials, generated materials, and application records stay on your machine unless a configured provider needs specific data.
+- **Secrets never logged.** API keys, passwords, session cookies, and sensitive application answers are redacted at the logging boundary.
+- **No fabrication.** The fabrication guard refuses generated content that asserts facts (employers, titles, dates, metrics) not present in the canonical profile.
+- **No access-control evasion.** Applyuminati detects CAPTCHAs, bot blocks, and login walls, then stops and asks for human intervention. It never attempts to defeat them.
+- **Autonomous submission is opt-in.** The default execution mode is `research_only`. Enabling `autonomous_submit` is an explicit, recorded configuration act.
+
+See [SECURITY.md](SECURITY.md) for responsible disclosure and hardening details.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
+
+## Attribution
+
+Applyuminati is an independent implementation inspired by architectural ideas from:
+- [ApplyPilot](https://github.com/spencerthayer/ApplyPilot) (AGPL-3.0 — ideas only, no code reused)
+- [job-hunt](https://github.com/spencerthayer/job-hunt) (MIT)
+- [job-hunt-skills](https://github.com/Remotivated/job-hunt-skills) (MIT)
+- [offer-toolkit-skill](https://github.com/yanliudesign/offer-toolkit-skill) (MIT)
+- [ai-job-hunter-app](https://github.com/saeedkolivand/ai-job-hunter-app)
+- [job-hunter-team](https://github.com/leopu00/job-hunter-team)
+- [abdulrbasit/job-hunter](https://github.com/abdulrbasit/job-hunter)
+- [open-career-skills](https://github.com/squerne/open-career-skills)
+- [mirror](https://github.com/prateekpuri01/mirror)
+- [jobclaw-skills](https://github.com/jain777/jobclaw-skills)
+- [job-hunt-agent](https://github.com/avish006/job-hunt-agent)
+- [ego-lite](https://github.com/citrolabs/ego-lite) (preferred browser backend)
+
+No code was copied from these repositories. See [ARCHITECTURE.md](ARCHITECTURE.md) for the patterns adopted and the deviations taken.

@@ -67,7 +67,7 @@ def sync_url(url: str) -> str:
 
 def _install_sqlite_pragmas(engine: AsyncEngine) -> None:
     @event.listens_for(engine.sync_engine, "connect")
-    def _set_pragmas(dbapi_connection: Any, _record: Any) -> None:  # noqa: ANN401
+    def _set_pragmas(dbapi_connection: Any, _record: Any) -> None:
         cursor = dbapi_connection.cursor()
         try:
             for pragma in _SQLITE_PRAGMAS:
@@ -146,7 +146,7 @@ class Database:
         try:
             async with self.engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
-        except Exception as exc:  # noqa: BLE001 - reported, not raised
+        except Exception as exc:
             log.warning("database.check_failed", error=str(exc))
             return False
         return True
@@ -157,7 +157,7 @@ class Database:
             async with self.engine.connect() as conn:
                 result = await conn.execute(text("SELECT version_num FROM alembic_version"))
                 row = result.first()
-        except Exception:  # noqa: BLE001 - table absent before the first migration
+        except Exception:
             return None
         return str(row[0]) if row else None
 
@@ -167,8 +167,8 @@ class Database:
         Tests only. Production schema changes go through Alembic so that an
         existing local database is upgraded rather than silently diverging.
         """
-        from applyuminati.db.base import Base
         from applyuminati.db import models  # noqa: F401  - registers mappers
+        from applyuminati.db.base import Base
 
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)

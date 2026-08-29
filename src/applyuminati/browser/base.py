@@ -189,7 +189,9 @@ class BrowserMetadata:
     name: str
     capabilities: frozenset[BrowserCapability]
     #: Platforms the backend runs on: ``{"darwin"}`` for ego lite.
-    platforms: frozenset[str] = field(default_factory=lambda: frozenset({"darwin", "linux", "win32"}))
+    platforms: frozenset[str] = field(
+        default_factory=lambda: frozenset({"darwin", "linux", "win32"})
+    )
     homepage: str | None = None
     notes: str = ""
 
@@ -227,7 +229,9 @@ class BrowserSession(Protocol):
 
     async def click(self, locator: str, *, label: str | None = None) -> ActionResult: ...
 
-    async def wait_for_navigation(self, *, timeout_seconds: float | None = None) -> ActionResult: ...
+    async def wait_for_navigation(
+        self, *, timeout_seconds: float | None = None
+    ) -> ActionResult: ...
 
     async def screenshot(self, *, relative_path: str) -> str:
         """Capture a screenshot; returns its data-dir-relative path."""
@@ -274,7 +278,7 @@ def browser_plugin(
     *,
     slug: str,
     name: str,
-    factory: Any,  # noqa: ANN401
+    factory: Any,
     capabilities: frozenset[BrowserCapability],
     description: str = "",
     priority: int = 0,

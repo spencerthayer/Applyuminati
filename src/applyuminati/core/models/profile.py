@@ -326,9 +326,7 @@ class CareerProfile(BaseModel):
     def banned_phrases(self) -> set[str]:
         """Phrases the generator must not emit, from style plus learned rejections."""
         banned = {p.strip().lower() for p in self.writing_style.banned_phrases if p.strip()}
-        banned.update(
-            p.phrase.strip().lower() for p in self.wording_preferences if not p.preferred
-        )
+        banned.update(p.phrase.strip().lower() for p in self.wording_preferences if not p.preferred)
         return banned
 
     def default_answer(self, key: str) -> QuestionnaireDefault | None:

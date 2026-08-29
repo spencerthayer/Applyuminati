@@ -1,0 +1,87 @@
+# =============================================================================
+# Applyuminati -- DEVELOPMENT stack. This is not the file you deploy.
+# =============================================================================
+#
+# Use this for local development: it builds the image from source, bind-mounts
+# the working tree, and runs both halves with hot reload on separate ports.
+#
+#   docker compose -f docker-compose.dev.yml up --build
+#
+#   UI  http://localhost:5173   (Vite dev server, proxies /api to the api service)
+#   API http://localhost:8000   (uvicorn --reload)
+#
+# The deployable stack is docker-compose.yml: one prebuilt image, one port, no
+# build context, pasteable into Portainer. Do not add bind mounts or a `build:`
+# key to that file -- those are exactly what this file exists to contain.
+# =============================================================================
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    ports:
+      - "${APPLYUMINATI_DEV_API_PORT:-8000}:8000"
+    volumes:
+      # Source is mounted, not baked. PYTHONPATH below makes these files shadow
+      # the copy installed into the image's virtualenv, so edits take effect.
+      - ./src:/app/src:ro
+      - ./alembic.ini:/app/alembic.ini:ro
+      # Dev state stays in a named volume so a stray `rm -rf` in the working
+      # tree cannot take the database with it.
+      - applyuminati-dev-data:/data
+    environment:
+      PYTHONPATH: /app/src
+      APPLYUMINATI_DATA_DIR: /data
+      APPLYUMINATI_ENVIRONMENT: docker
+      APPLYUMINATI_LOG_LEVEL: ${APPLYUMINATI_LOG_LEVEL:-DEBUG}
+      # console is easier to read than json while developing.
+      APPLYUMINATI_LOG_FORMAT: ${APPLYUMINATI_LOG_FORMAT:-console}
+      APPLYUMINATI_EXECUTION_MODE: ${APPLYUMINATI_EXECUTION_MODE:-research_only}
+      APPLYUMINATI_SERVER__HOST: 0.0.0.0
+      APPLYUMINATI_SERVER__PORT: "8000"
+      APPLYUMINATI_LLM__ENABLED: "${APPLYUMINATI_LLM__ENABLED:-true}"
+      APPLYUMINATI_LLM__DEFAULT_PROVIDER: ${APPLYUMINATI_LLM__DEFAULT_PROVIDER:-}
+      # The dev server has no bundled UI to serve: Vite serves it on 5173.
+      # Left unset so the API does not try to mount an empty asset directory.
+    # The production entrypoint execs a non-reloading uvicorn, which is correct
+    # for a released image and wrong here. Overriding it is the whole reason
+    # this file exists; migrations still run first, exactly as they would there.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        alembic upgrade head &&
+        exec python -m uvicorn applyuminati.api.app:app
+        --host 0.0.0.0 --port 8000
+        --reload --reload-dir /app/src
+    # Bind-mounted source is root-owned on most hosts; running as root here
+    # avoids a permissions detour that only affects development.
+    user: root
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  web:
+    image: node:22-alpine
+    working_dir: /app/apps/web
+    ports:
+      - "${APPLYUMINATI_DEV_WEB_PORT:-5173}:5173"
+    volumes:
+      - ./apps/web:/app/apps/web
+      # Anonymous-style named volume keeps container node_modules out of the
+      # host tree, so a Linux container and a macOS host can coexist.
+      - applyuminati-dev-node-modules:/app/apps/web/node_modules
+    environment:
+      # Read by apps/web/vite.config.ts to target the api service instead of
+      # 127.0.0.1. Dev-server only; it never reaches the production bundle.
+      APPLYUMINATI_DEV_PROXY_TARGET: http://api:8000
+    command:
+      - sh
+      - -c
+      - npm install && npm run dev -- --host 0.0.0.0 --port 5173
+    depends_on:
+      - api
+
+volumes:
+  applyuminati-dev-data:
+  applyuminati-dev-node-modules:

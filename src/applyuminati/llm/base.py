@@ -235,7 +235,7 @@ def llm_plugin(
     *,
     slug: str,
     name: str,
-    factory: Any,  # noqa: ANN401 - adapter constructors vary
+    factory: Any,
     capabilities: frozenset[LLMCapability],
     description: str = "",
     priority: int = 0,

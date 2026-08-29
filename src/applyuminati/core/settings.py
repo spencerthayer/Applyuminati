@@ -326,7 +326,7 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
     the data directory itself can be overridden by env var.
     """
 
-    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:  # noqa: ANN401
+    def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
         raise NotImplementedError  # pragma: no cover - not used by __call__
 
     def __call__(self) -> dict[str, Any]:
@@ -351,7 +351,7 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
 _settings: Settings | None = None
 
 
-def get_settings(**overrides: Any) -> Settings:  # noqa: ANN401
+def get_settings(**overrides: Any) -> Settings:
     """Return the process settings, building them on first use.
 
     Passing overrides always constructs a fresh instance (used by tests and by

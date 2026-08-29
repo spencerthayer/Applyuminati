@@ -1,0 +1,135 @@
+# Continuous integration: the gate every change passes before release.yml is
+# allowed to publish an image. Three independent jobs run in parallel because
+# the Python API, the web UI and the container image fail for unrelated reasons
+# and a maintainer should see all three verdicts from a single push.
+
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same ref makes the in-flight run irrelevant.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Keep the network out of the default suite: these markers exclude the tests
+  # that need outbound access or a real browser.
+  PYTEST_MARKERS: not network and not browser
+
+jobs:
+  python:
+    name: Python (lint, types, imports, tests)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      # Formatting is checked, never applied: CI does not rewrite the tree.
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Ruff lint
+        run: uv run ruff check .
+
+      - name: Pyright
+        run: uv run pyright
+
+      # Enforces the layered dependency direction declared in pyproject's
+      # [tool.importlinter] contracts. A failure here is an architecture
+      # regression, not a style nit, so it gates the same as the tests.
+      - name: Import contracts
+        run: uv run lint-imports
+
+      - name: Pytest
+        run: uv run pytest -m "${{ env.PYTEST_MARKERS }}" --cov=src/applyuminati
+
+  web:
+    name: Web (lint, types, tests, build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      # `npm ci` requires a committed lockfile; the fallback keeps a fresh
+      # checkout that has not committed one yet from failing the whole run.
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: TypeScript
+        run: npm run typecheck
+
+      - name: Vitest
+        run: npm run test
+
+      # Last, because a build failure is only interesting once the code is sane.
+      - name: Build
+        run: npm run build
+
+  docker:
+    name: Docker image and stack file
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Single-platform with `load: true`, so the smoke test below can actually
+      # run the image. release.yml is what builds multi-arch and pushes.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: applyuminati:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Proves the image is coherent end to end: the venv is on PATH, the
+      # entrypoint's `cli` dispatch works, and the Typer app imports -- which
+      # transitively imports the whole package graph.
+      - name: Smoke test the CLI
+        run: docker run --rm applyuminati:ci cli --help
+
+      # The deployable stack file is pasted into Portainer by hand, so a syntax
+      # error or a missing default would otherwise be discovered by a user
+      # mid-deploy. `config` resolves every interpolation with no .env present.
+      - name: Validate deployable stack file
+        run: docker compose -f docker-compose.yml config

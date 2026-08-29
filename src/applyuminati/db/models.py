@@ -202,20 +202,26 @@ class ApplicationRow(Base):
     __tablename__ = "applications"
     __table_args__ = (
         UniqueConstraint("job_id", "profile_id", name="uq_applications_job_profile"),
-        Index("ix_applications_state", "state", "updated_at"),
+        # Leads with ``state``, so it also serves plain state lookups. The
+        # column must therefore NOT declare ``index=True``: the naming
+        # convention would derive the identical name and metadata creation
+        # would fail with a duplicate index.
+        Index("ix_applications_state_updated", "state", "updated_at"),
     )
 
     id: Mapped[str] = _pk()
     job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"))
     profile_id: Mapped[str] = mapped_column(ForeignKey("profiles.id", ondelete="CASCADE"))
-    state: Mapped[str] = mapped_column(String(24), default="discovered", index=True)
+    state: Mapped[str] = mapped_column(String(24), default="discovered")
     created_at: Mapped[datetime] = mapped_column(default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
     submitted_at: Mapped[datetime | None] = mapped_column(nullable=True)
     external_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     fit_score_id: Mapped[str | None] = mapped_column(ULID, nullable=True)
     #: Idempotency guard so the same role is never submitted twice.
-    submission_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    submission_fingerprint: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     events: Mapped[list[ApplicationEventRow]] = relationship(
@@ -236,9 +242,7 @@ class ApplicationEventRow(Base):
     __table_args__ = (Index("ix_application_events_app_time", "application_id", "occurred_at"),)
 
     id: Mapped[str] = _pk()
-    application_id: Mapped[str] = mapped_column(
-        ForeignKey("applications.id", ondelete="CASCADE")
-    )
+    application_id: Mapped[str] = mapped_column(ForeignKey("applications.id", ondelete="CASCADE"))
     occurred_at: Mapped[datetime] = mapped_column(default=utcnow)
     from_state: Mapped[str | None] = mapped_column(String(24), nullable=True)
     to_state: Mapped[str | None] = mapped_column(String(24), nullable=True)

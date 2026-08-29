@@ -48,7 +48,7 @@ export function Settings() {
             <tr key={src.slug}>
               <td>{src.slug}</td><td>{src.name}</td><td>{src.tier}</td>
               <td>
-                <button className="secondary" onClick={() => toggleSrc.mutate({ slug: src.slug, enable: !src.enabled })}>
+                <button className="secondary" onClick={() => toggleSrc.mutate({ slug: src.slug, enabled: !src.enabled })}>
                   {src.enabled ? "Disable" : "Enable"}
                 </button>
               </td>
@@ -70,14 +70,16 @@ export function Settings() {
         </div>
       )}
 
-      <div className="card">
-        <h3>Search Strategy</h3>
-        <p style={{ marginBottom: 12, color: "var(--text-muted)" }}>Exact numeric values are stored, not vague labels.</p>
-        <StrategySlider label="Depth bias" value={settings?.strategy?.depth_bias ?? 0.5} onChange={(v) => strategyMut.mutate({ strategy: { ...settings?.strategy, depth_bias: v } })} />
-        <StrategySlider label="Application volume" value={settings?.strategy?.application_volume_bias ?? 0.35} onChange={(v) => strategyMut.mutate({ strategy: { ...settings?.strategy, application_volume_bias: v } })} />
-        <StrategySlider label="Title exploration" value={settings?.strategy?.title_exploration ?? 0.3} onChange={(v) => strategyMut.mutate({ strategy: { ...settings?.strategy, title_exploration: v } })} />
-        <StrategySlider label="Minimum fit score" value={settings?.strategy?.minimum_fit_score ?? 0.55} min={0} max={1} step={0.05} onChange={(v) => strategyMut.mutate({ strategy: { ...settings?.strategy, minimum_fit_score: v } })} />
-      </div>
+      {settings?.strategy && (
+        <div className="card">
+          <h3>Search Strategy</h3>
+          <p style={{ marginBottom: 12, color: "var(--text-muted)" }}>Exact numeric values are stored, not vague labels.</p>
+          <StrategySlider label="Depth bias" value={settings.strategy.depth_bias} onChange={(v) => strategyMut.mutate({ strategy: { ...settings.strategy, depth_bias: v } })} />
+          <StrategySlider label="Application volume" value={settings.strategy.application_volume_bias} onChange={(v) => strategyMut.mutate({ strategy: { ...settings.strategy, application_volume_bias: v } })} />
+          <StrategySlider label="Title exploration" value={settings.strategy.title_exploration} onChange={(v) => strategyMut.mutate({ strategy: { ...settings.strategy, title_exploration: v } })} />
+          <StrategySlider label="Minimum fit score" value={settings.strategy.minimum_fit_score} min={0} max={1} step={0.05} onChange={(v) => strategyMut.mutate({ strategy: { ...settings.strategy, minimum_fit_score: v } })} />
+        </div>
+      )}
     </div>
   );
 }

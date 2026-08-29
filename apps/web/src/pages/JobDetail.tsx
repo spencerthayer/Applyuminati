@@ -3,6 +3,7 @@ import { useJob } from "../api/hooks";
 import { Loading, ErrorBanner } from "../components/Feedback";
 import { ScoreBar } from "../components/ScoreBar";
 import { StateBadge } from "../components/Badges";
+import type { MissingRequirementView } from "../api/types";
 
 export function JobDetail() {
   const { id } = useParams<{ id: string }>();
@@ -38,9 +39,12 @@ export function JobDetail() {
           {job.score.missing_requirements.length > 0 && (
             <div style={{ marginTop: 12 }}>
               <h3>Missing Requirements</h3>
-              <ul>{job.score.missing_requirements.map((m, i) => (
-                <li key={i}><span className={`badge ${m.severity === "hard" ? "badge-red" : "badge-yellow"}`}>{m.severity}</span> {m.requirement}</li>
-              ))}</ul>
+              <ul>{job.score.missing_requirements.map((m, i) => {
+                const req = m as unknown as MissingRequirementView;
+                return (
+                  <li key={i}><span className={`badge ${req.severity === "hard" ? "badge-red" : "badge-yellow"}`}>{req.severity}</span> {req.requirement}</li>
+                );
+              })}</ul>
             </div>
           )}
           {job.score.uncertainties.length > 0 && (

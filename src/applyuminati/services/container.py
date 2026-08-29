@@ -32,7 +32,7 @@ from applyuminati.db.repositories import (
     SourceStateRepository,
     TaskRepository,
 )
-from applyuminati.db.session import Database
+from applyuminati.db.session import Database, get_database
 from applyuminati.llm.client import LLMClient
 
 log = get_logger(__name__)
@@ -84,7 +84,7 @@ class ServiceContainer:
         self.settings = settings or get_settings()
         configure_logging(level=self.settings.log_level, fmt=self.settings.log_format)
         self.settings.ensure_directories()
-        self.database = database or Database(self.settings)
+        self.database = database or get_database(self.settings)
         self._llm: LLMClient | None = None
         _register_builtin_plugins()
 

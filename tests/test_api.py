@@ -6,9 +6,14 @@ from fastapi.testclient import TestClient
 
 from applyuminati.api.app import create_app
 from applyuminati.db.session import set_database
+from applyuminati.services.container import set_container
 
 
 def _client(database):
+    # Force a fresh ServiceContainer bound to this test's database: both are
+    # process-wide singletons that otherwise survive across tests in the same
+    # pytest process.
+    set_container(None)
     set_database(database)
     app = create_app()
     return TestClient(app)

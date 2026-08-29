@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-async def database(settings: Settings) -> Database:
+async def database(settings: Settings) -> AsyncIterator[Database]:
     settings.ensure_directories()
     db = Database(settings)
     await db.create_all()

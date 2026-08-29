@@ -13,7 +13,12 @@ from applyuminati.core.models.common import (
     SeniorityLevel,
 )
 from applyuminati.core.models.job import Job, SourceTier
-from applyuminati.core.models.profile import CareerProfile, JobTargets, WorkEligibility
+from applyuminati.core.models.profile import (
+    CareerProfile,
+    JobTargets,
+    WorkAuthorizationStatus,
+    WorkEligibility,
+)
 from applyuminati.core.strategy import SearchStrategy
 from applyuminati.scoring.engine import score_job
 from applyuminati.sources.normalize import build_job
@@ -65,7 +70,9 @@ def test_scoring_produces_apply_for_strong_match() -> None:
 def test_scoring_produces_skip_for_hard_blocker() -> None:
     # No work authorization in the job's country.
     profile = _profile()
-    profile.eligibility = WorkEligibility(authorization={"XX": "not_authorized"})
+    profile.eligibility = WorkEligibility(
+        authorization={"XX": WorkAuthorizationStatus.NOT_AUTHORIZED}
+    )
     profile.strategy = SearchStrategy(work_authorization_is_hard_blocker=True)
     job = _job(locations=[Location(raw="Country X", country_code="XX")])
     score = score_job(job, profile, profile.strategy)

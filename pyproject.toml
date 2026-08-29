@@ -1,0 +1,237 @@
+[project]
+name = "applyuminati"
+version = "0.1.0"
+description = "Local-first, autonomous, LLM-powered job search and application platform."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "The Job Hunt Cabal" }]
+keywords = ["job-search", "ats", "llm", "agents", "json-resume", "local-first"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business",
+]
+
+dependencies = [
+  "aiosqlite>=0.20",
+  "alembic>=1.14",
+  "fastapi>=0.115",
+  "httpx>=0.28",
+  "pydantic>=2.10",
+  "pydantic-settings>=2.7",
+  "python-dotenv>=1.0",
+  "rich>=13.9",
+  "sqlalchemy>=2.0.36",
+  "structlog>=24.4",
+  "typer>=0.15",
+  "uvicorn[standard]>=0.34",
+]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.49"]
+
+[project.scripts]
+applyuminati = "applyuminati.cli.main:app"
+
+# Entry-point groups used for out-of-tree plugin discovery. Third-party
+# distributions register adapters here; nothing in the core imports them.
+[project.entry-points."applyuminati.sources"]
+greenhouse = "applyuminati.plugins.sources.greenhouse:PLUGIN"
+lever = "applyuminati.plugins.sources.lever:PLUGIN"
+local_feed = "applyuminati.plugins.sources.local_feed:PLUGIN"
+
+[project.entry-points."applyuminati.browsers"]
+ego_lite = "applyuminati.plugins.browsers.ego_lite:PLUGIN"
+playwright = "applyuminati.plugins.browsers.playwright_backend:PLUGIN"
+
+[project.entry-points."applyuminati.agents"]
+codex = "applyuminati.plugins.agents.cli_agents:CODEX"
+claude_code = "applyuminati.plugins.agents.cli_agents:CLAUDE_CODE"
+opencode = "applyuminati.plugins.agents.cli_agents:OPENCODE"
+pi = "applyuminati.plugins.agents.cli_agents:PI"
+oh_my_pi = "applyuminati.plugins.agents.cli_agents:OH_MY_PI"
+
+[project.entry-points."applyuminati.email"]
+imap = "applyuminati.plugins.email.imap:PLUGIN"
+
+[project.entry-points."applyuminati.llm"]
+openai_compatible = "applyuminati.plugins.llm.openai_compatible:PLUGIN"
+anthropic = "applyuminati.plugins.llm.anthropic:PLUGIN"
+gemini = "applyuminati.plugins.llm.gemini:PLUGIN"
+
+[project.urls]
+Homepage = "https://github.com/spencerthayer/Applyuminati"
+Source = "https://github.com/spencerthayer/Applyuminati"
+Issues = "https://github.com/spencerthayer/Applyuminati/issues"
+
+[dependency-groups]
+dev = [
+  "import-linter>=2.1",
+  "pyright>=1.1.390",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.25",
+  "pytest-cov>=6.0",
+  "respx>=0.22",
+  "ruff>=0.8.4",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/applyuminati"]
+
+# --------------------------------------------------------------------------
+# Ruff
+# --------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "B",    # flake8-bugbear
+  "C4",   # comprehensions
+  "UP",   # pyupgrade
+  "ANN",  # annotations
+  "ASYNC",
+  "S",    # bandit
+  "A",    # builtins shadowing
+  "DTZ",  # naive datetimes
+  "T20",  # print
+  "PT",   # pytest style
+  "RET",
+  "SIM",
+  "TID",
+  "PTH",
+  "PL",
+  "RUF",
+]
+ignore = [
+  "ANN401", # Any is intentional at plugin/config boundaries
+  "PLR0913", # domain constructors legitimately take many fields
+  "PLR2004", # magic values are readable in scoring maths
+  "S101",   # asserts are used in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "S105", "S106", "PLR0915"]
+"src/applyuminati/cli/**" = ["T20", "B008"]
+"src/applyuminati/api/**" = ["B008"]
+"src/applyuminati/db/migrations/**" = ["ANN", "I001"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.isort]
+known-first-party = ["applyuminati"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# --------------------------------------------------------------------------
+# Pyright
+# --------------------------------------------------------------------------
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["**/__pycache__", "src/applyuminati/db/migrations/versions"]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+reportMissingImports = "error"
+reportMissingTypeStubs = false
+reportPrivateImportUsage = false
+
+# --------------------------------------------------------------------------
+# Pytest
+# --------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "network: test requires outbound network access (excluded from the default suite)",
+  "browser: test requires a real browser backend (excluded from the default suite)",
+  "slow: long-running test",
+]
+filterwarnings = ["error", "ignore::DeprecationWarning:passlib.*"]
+
+[tool.coverage.run]
+source = ["src/applyuminati"]
+branch = true
+
+# --------------------------------------------------------------------------
+# import-linter: enforces the dependency direction described in ARCHITECTURE.md
+# --------------------------------------------------------------------------
+[tool.importlinter]
+root_package = "applyuminati"
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Layered architecture (higher layers may import lower layers only)"
+type = "layers"
+layers = [
+  "applyuminati.cli | applyuminati.api",
+  "applyuminati.services",
+  "applyuminati.plugins",
+  "applyuminati.applications | applyuminati.scoring | applyuminati.resume | applyuminati.memory | applyuminati.sources | applyuminati.browser | applyuminati.agents | applyuminati.email | applyuminati.llm | applyuminati.tasks",
+  "applyuminati.db",
+  "applyuminati.core",
+]
+
+[[tool.importlinter.contracts]]
+name = "Core domain is vendor-neutral"
+type = "forbidden"
+source_modules = ["applyuminati.core"]
+forbidden_modules = [
+  "applyuminati.db",
+  "applyuminati.llm",
+  "applyuminati.plugins",
+  "applyuminati.services",
+  "httpx",
+  "sqlalchemy",
+  "fastapi",
+  "playwright",
+]
+
+[[tool.importlinter.contracts]]
+name = "Contract packages never import their own concrete plugins"
+type = "forbidden"
+source_modules = [
+  "applyuminati.sources",
+  "applyuminati.browser",
+  "applyuminati.agents",
+  "applyuminati.email",
+  "applyuminati.llm",
+  "applyuminati.scoring",
+  "applyuminati.resume",
+  "applyuminati.applications",
+  "applyuminati.memory",
+]
+forbidden_modules = ["applyuminati.plugins", "applyuminati.services", "applyuminati.api", "applyuminati.cli"]
+
+[[tool.importlinter.contracts]]
+name = "Domain packages do not depend on the web framework"
+type = "forbidden"
+source_modules = [
+  "applyuminati.core",
+  "applyuminati.db",
+  "applyuminati.sources",
+  "applyuminati.scoring",
+  "applyuminati.resume",
+  "applyuminati.applications",
+  "applyuminati.services",
+]
+forbidden_modules = ["fastapi", "starlette", "uvicorn", "typer"]

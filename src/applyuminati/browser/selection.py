@@ -29,7 +29,7 @@ async def select_browser(settings: Settings) -> tuple[BrowserBackend, HealthRepo
         try:
             backend = descriptor.create(settings=settings)
             report = await backend.health()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             rejections.append(f"{slug}: {exc}")
             continue
         if report.usable:
@@ -44,14 +44,17 @@ async def select_browser(settings: Settings) -> tuple[BrowserBackend, HealthRepo
 
 async def probe_all(settings: Settings) -> list[HealthReport]:
     """Probe every registered browser backend concurrently."""
+
     async def probe(slug: str) -> HealthReport:
         descriptor = BROWSER_REGISTRY.try_get(slug)
         if descriptor is None:
-            return HealthReport(plugin=slug, state=HealthState.NOT_INSTALLED, detail="not registered")
+            return HealthReport(
+                plugin=slug, state=HealthState.NOT_INSTALLED, detail="not registered"
+            )
         try:
             backend = descriptor.create(settings=settings)
             return await backend.health()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return HealthReport(plugin=slug, state=HealthState.UNAVAILABLE, detail=str(exc))
 
     return list(await asyncio.gather(*(probe(slug) for slug in BROWSER_REGISTRY.slugs())))

@@ -19,13 +19,15 @@ from applyuminati.llm.base import (
     CompletionResponse,
     LLMCapability,
     LLMProvider,
+    ModelT,
     ProviderMetadata,
     Role,
     TokenUsage,
     llm_plugin,
 )
+from applyuminati.llm.structured import request_structured
 
-__all__ = ["AnthropicProvider", "PLUGIN"]
+__all__ = ["PLUGIN", "AnthropicProvider"]
 
 _DEFAULT_URL = "https://api.anthropic.com/v1"
 _CAPABILITIES = frozenset(
@@ -73,12 +75,18 @@ class AnthropicProvider(LLMProvider):
                 },
             )
             if resp.status_code < 400:
-                return HealthReport(plugin=self._name, state=HealthState.HEALTHY, detail="reachable")
+                return HealthReport(
+                    plugin=self._name, state=HealthState.HEALTHY, detail="reachable"
+                )
             if resp.status_code in (401, 403):
-                return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail="auth failed")
-        except Exception as exc:  # noqa: BLE001
+                return HealthReport(
+                    plugin=self._name, state=HealthState.UNAVAILABLE, detail="auth failed"
+                )
+        except Exception as exc:
             return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail=str(exc))
-        return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail="health check failed")
+        return HealthReport(
+            plugin=self._name, state=HealthState.UNAVAILABLE, detail="health check failed"
+        )
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = request.model or self._config.default_model or "claude-3-5-haiku-20241022"
@@ -97,7 +105,11 @@ class AnthropicProvider(LLMProvider):
             body["system"] = system
         if request.response_schema:
             body["tools"] = [
-                {"name": "respond", "description": "Respond with structured output", "input_schema": request.response_schema}
+                {
+                    "name": "respond",
+                    "description": "Respond with structured output",
+                    "input_schema": request.response_schema,
+                }
             ]
             body["tool_choice"] = {"type": "tool", "name": "respond"}
 
@@ -107,7 +119,9 @@ class AnthropicProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise TransientNetworkError(f"timeout: {exc}", code="llm.timeout") from exc
         except httpx.ConnectError as exc:
-            raise TransientNetworkError(f"connection failed: {exc}", code="llm.connect_error") from exc
+            raise TransientNetworkError(
+                f"connection failed: {exc}", code="llm.connect_error"
+            ) from exc
 
         self._translate_error(resp)
         data = resp.json()
@@ -138,6 +152,11 @@ class AnthropicProvider(LLMProvider):
             prompt_version=request.prompt_version,
         )
 
+    async def complete_structured(
+        self, request: CompletionRequest, schema: type[ModelT]
+    ) -> tuple[ModelT, CompletionResponse]:
+        return await request_structured(self, request, schema)
+
     async def stream(self, request: CompletionRequest) -> Any:  # type: ignore[override]
         response = await self.complete(request)
         yield response.text
@@ -151,7 +170,9 @@ class AnthropicProvider(LLMProvider):
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After")
             seconds = float(retry_after) if retry_after else None
-            raise RateLimitedError("rate limited", code="llm.rate_limited", retry_after_seconds=seconds)
+            raise RateLimitedError(
+                "rate limited", code="llm.rate_limited", retry_after_seconds=seconds
+            )
         if resp.status_code in (401, 403):
             raise AuthenticationRequiredError(
                 f"auth failed (HTTP {resp.status_code})", code="llm.auth_required"

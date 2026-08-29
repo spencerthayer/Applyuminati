@@ -8,11 +8,11 @@ event rather than a silent edit.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from string import Template
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from applyuminati.llm.base import Message, Role
 
@@ -30,7 +30,9 @@ class PromptTemplate:
 
     def render(self, **kwargs: Any) -> list[Message]:
         """Render the prompt into messages. Raises on a missing variable."""
-        system_msg = Template(self.system).substitute(**kwargs) if "$" in self.system else self.system
+        system_msg = (
+            Template(self.system).substitute(**kwargs) if "$" in self.system else self.system
+        )
         user_content = Template(self.template).substitute(**kwargs)
         return [
             Message(role=Role.SYSTEM, content=system_msg),

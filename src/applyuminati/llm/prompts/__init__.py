@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-from applyuminati.email.base import EmailClass
 from applyuminati.llm.prompts.base import PROMPT_REGISTRY, PromptTemplate, get_prompt, register
+
+__all__ = ["PROMPT_REGISTRY", "PromptTemplate", "get_prompt", "register"]
 
 _SYSTEM = (
     "You are part of Applyuminati, a local-first job search assistant. "
@@ -83,8 +84,7 @@ register(
         version="2026-01",
         description="Adjust deterministic dimension scores within bounded limits.",
         output_schema=ScoreEnrichment,
-        system=_SYSTEM
-        + " You may ONLY adjust existing dimension scores by at most ±0.2, add "
+        system=_SYSTEM + " You may ONLY adjust existing dimension scores by at most ±0.2, add "
         "uncertainties, add missing requirements, and rewrite the explanation. "
         "You may NOT produce an overall score or a recommendation.",
         template=(
@@ -104,8 +104,7 @@ register(
         version="2026-01",
         description="Rewrite existing verified claims more clearly for a job.",
         output_schema=TailoredBullets,
-        system=_SYSTEM
-        + " You may ONLY rewrite existing verified claims more clearly. "
+        system=_SYSTEM + " You may ONLY rewrite existing verified claims more clearly. "
         "You may NOT add employers, titles, dates, technologies, metrics or "
         "achievements not present in the supplied claims.",
         template=(
@@ -124,8 +123,7 @@ register(
         version="2026-01",
         description="Answer an employer question from supplied evidence.",
         output_schema=QuestionAnswer,
-        system=_SYSTEM
-        + " Sensitive questions (work authorisation, salary, demographics, "
+        system=_SYSTEM + " Sensitive questions (work authorisation, salary, demographics, "
         "clearances, legal attestations) must NEVER be answered by inference. "
         "When evidence is insufficient, needs_user=true is the CORRECT answer.",
         template=(
@@ -138,20 +136,32 @@ register(
 )
 
 # -- Email classification -------------------------------------------------
-_email_classes = ", ".join(c.value for c in EmailClass)
+# Kept in sync by hand with applyuminati.email.base.EmailClass's values.
+# Not imported directly: `llm` and `email` are independent siblings in the
+# layered architecture, and this prompt module must load with no email
+# dependency at all.
+_EMAIL_CLASSES = (
+    "application_confirmation",
+    "recruiter_outreach",
+    "rejection",
+    "assessment_request",
+    "interview_request",
+    "scheduling",
+    "offer",
+    "information_request",
+    "marketing",
+    "unrelated",
+)
+_email_classes = ", ".join(_EMAIL_CLASSES)
 register(
     PromptTemplate(
         id="email.classify",
         version="2026-01",
         description="Classify an employer email and extract dates/links.",
         output_schema=EmailClassification,
-        system=_SYSTEM
-        + f" The email_class must be one of: {_email_classes}.",
+        system=_SYSTEM + f" The email_class must be one of: {_email_classes}.",
         template=(
-            "Subject: $subject\n"
-            "From: $sender\n"
-            "Body:\n$body\n\n"
-            "Return a classification as JSON."
+            "Subject: $subject\nFrom: $sender\nBody:\n$body\n\nReturn a classification as JSON."
         ),
     )
 )
@@ -163,13 +173,10 @@ register(
         version="2026-01",
         description="Summarise supplied source text into topic-tagged findings.",
         output_schema=CompanyFindings,
-        system=_SYSTEM
-        + " You may ONLY use the supplied source text. Do NOT answer from "
+        system=_SYSTEM + " You may ONLY use the supplied source text. Do NOT answer from "
         "your parametric memory. Each finding must cite its source_url.",
         template=(
-            "Company: $company\n"
-            "Source text:\n$source_text\n\n"
-            "Return topic-tagged findings as JSON."
+            "Company: $company\nSource text:\n$source_text\n\nReturn topic-tagged findings as JSON."
         ),
     )
 )

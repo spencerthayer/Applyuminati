@@ -15,6 +15,8 @@ import re
 from datetime import datetime
 from typing import Any
 
+from applyuminati.core.clock import ensure_utc
+from applyuminati.core.ids import new_ulid
 from applyuminati.core.models.common import (
     Compensation,
     CompensationPeriod,
@@ -37,16 +39,19 @@ _REMOTE_KEYWORDS = (
 _REMOTE_LOCATION_RE = re.compile(r"\bremote\b", re.I)
 
 _COMP_PATTERNS: tuple[tuple[re.Pattern[str], CompensationPeriod], ...] = (
-    # $120,000 - $150,000 / yr  |  $120k–$150k  |  120000-150000 USD
+    # $120,000 - $150,000 / yr  |  $120k-$150k  |  120000-150000 USD
     (
         re.compile(
-            r"\$\s?(\d[\d,]{0,}(?:\.\d+)?)\s?([kKmM])?\s*(?:[-–to]+|–|—)\s?\$?\s?"
+            r"\$\s?(\d[\d,]{0,}(?:\.\d+)?)\s?([kKmM])?\s*(?:[--to]+|-|—)\s?\$?\s?"
             r"(\d[\d,]{0,}(?:\.\d+)?)\s?([kKmM])?\s*(?:/?(?:yr|year|annual(?:ly)?))?\b",
             re.I,
         ),
         CompensationPeriod.YEARLY,
     ),
-    (re.compile(r"\$\s?(\d[\d,]+)\s?(?:[-–to]+|–|—)\s?\$?\s?(\d[\d,]+)\b"), CompensationPeriod.YEARLY),
+    (
+        re.compile(r"\$\s?(\d[\d,]+)\s?(?:[--to]+|-|—)\s?\$?\s?(\d[\d,]+)\b"),
+        CompensationPeriod.YEARLY,
+    ),
     # single value: $120,000/yr or $120k
     (
         re.compile(r"\$\s?(\d[\d,]{0,}(?:\.\d+)?)\s?([kKmM])\s*(?:/?(?:yr|year|annual(?:ly)?))?\b"),
@@ -74,7 +79,7 @@ def parse_compensation(text: str | None) -> Compensation | None:
     """Parse a pay range from free text.
 
     Returns ``None`` for anything ambiguous rather than guessing. Recognises
-    annual ranges (``$120k–$150k``, ``$120,000 - $150,000``), single annual
+    annual ranges (``$120k-$150k``, ``$120,000 - $150,000``), single annual
     values, and hourly rates (``$60/hr``). Currency is assumed USD unless an
     ISO code appears in the matched window.
     """
@@ -84,7 +89,7 @@ def parse_compensation(text: str | None) -> Compensation | None:
         match = pattern.search(text)
         if match is None:
             continue
-        groups = match.groups()
+        groups: tuple[str | None, ...] = match.groups()
         currency = "USD"
         code_match = re.search(r"\b(USD|EUR|GBP|CAD|AUD|JPY|INR|SGD)\b", text, re.IGNORECASE)
         if code_match:
@@ -95,7 +100,7 @@ def parse_compensation(text: str | None) -> Compensation | None:
             return Compensation(
                 minimum=low, maximum=high, currency=currency, period=period, raw_text=match.group(0)
             )
-        if groups[0]:
+        if groups and groups[0]:
             value = _expand_number(groups[0], groups[1] if len(groups) > 1 else None)
             return Compensation(
                 minimum=value, currency=currency, period=period, raw_text=match.group(0)

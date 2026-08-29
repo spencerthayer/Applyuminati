@@ -19,10 +19,10 @@ from enum import StrEnum
 
 from applyuminati.core.models.jsonresume import JsonResume, ResumeWork
 from applyuminati.core.models.profile import CareerProfile
-from applyuminati.core.provenance import AssertionLevel, EvidenceLink
+from applyuminati.core.provenance import EvidenceLink
 from applyuminati.resume.evidence import EvidenceIndex
 
-__all__ = ["GuardReport", "GuardSeverity", "GuardViolation", "FabricationGuard"]
+__all__ = ["FabricationGuard", "GuardReport", "GuardSeverity", "GuardViolation"]
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9+#.]+")
 _NUMBER_RE = re.compile(r"\d[\d,]*\.?\d+\s?%|\$\s?\d[\d,]*\.?\d+|\b\d[\d,]*\.?\d+\b")
@@ -63,13 +63,9 @@ class FabricationGuard:
         self._known_institutions = {
             edu.institution.lower() for edu in profile.resume.education if edu.institution
         }
-        self._known_certs = {
-            cert.name.lower() for cert in profile.resume.certificates if cert.name
-        }
+        self._known_certs = {cert.name.lower() for cert in profile.resume.certificates if cert.name}
         self._known_skills = profile.skill_names()
-        self._metric_values = {
-            self._normalise_metric(m.value, m.unit) for m in profile.metrics
-        }
+        self._metric_values = {self._normalise_metric(m.value, m.unit) for m in profile.metrics}
         self._banned = profile.banned_phrases()
 
     def check(self, generated: JsonResume) -> GuardReport:
@@ -125,17 +121,33 @@ class FabricationGuard:
                 )
             )
         # Check dates against canonical entries by employer.
-        canonical = next(
-            (entry for entry in self._profile.resume.work if entry.name and entry.name.lower() == work.name.lower()),
-            None,
-        ) if work.name else None
-        if canonical and work.startDate and canonical.startDate and work.startDate != canonical.startDate:
+        canonical = (
+            next(
+                (
+                    entry
+                    for entry in self._profile.resume.work
+                    if entry.name and entry.name.lower() == work.name.lower()
+                ),
+                None,
+            )
+            if work.name
+            else None
+        )
+        if (
+            canonical
+            and work.startDate
+            and canonical.startDate
+            and work.startDate != canonical.startDate
+        ):
             violations.append(
                 GuardViolation(
                     severity=GuardSeverity.HARD,
                     kind="altered_date",
                     path=f"{path}.startDate",
-                    detail=f"start date {work.startDate!r} differs from canonical {canonical.startDate!r}",
+                    detail=(
+                        f"start date {work.startDate!r} differs from "
+                        f"canonical {canonical.startDate!r}"
+                    ),
                     offending_text=work.startDate,
                 )
             )
@@ -164,7 +176,9 @@ class FabricationGuard:
             len(token) <= 6 and token.isupper() and token.isascii()
         )
 
-    def _check_banned_phrases(self, generated: JsonResume, violations: list[GuardViolation]) -> None:
+    def _check_banned_phrases(
+        self, generated: JsonResume, violations: list[GuardViolation]
+    ) -> None:
         all_text = " ".join(
             [generated.basics.summary or ""]
             + [highlight for work in generated.work for highlight in work.highlights]
@@ -200,13 +214,16 @@ class FabricationGuard:
                             severity=GuardSeverity.HARD,
                             kind="invented_metric",
                             path=f"work[{work_index}].highlights[{highlight_index}]",
-                            detail=f"numeric value {raw!r} does not appear in the profile's metric ledger",
+                            detail=(
+                                f"numeric value {raw!r} does not appear in "
+                                f"the profile's metric ledger"
+                            ),
                             offending_text=raw,
                         )
                     )
 
     @staticmethod
-    def _normalise_metric(value: float, unit: object) -> str:  # noqa: ARG004
+    def _normalise_metric(value: float, unit: object) -> str:
         return f"{value:g}"
 
     @staticmethod

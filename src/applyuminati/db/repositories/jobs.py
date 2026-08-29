@@ -12,6 +12,7 @@ from datetime import datetime
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from applyuminati.core.models.job import Job, JobSourceRecord, PipelineStage, VerificationState
 from applyuminati.db.mappers import (
@@ -57,10 +58,7 @@ class JobRepository:
     async def find_by_canonical_url(self, url: str) -> Job | None:
         row = (
             await self._session.scalars(
-                select(JobRow)
-                .join(JobSourceRow)
-                .where(JobSourceRow.canonical_url == url)
-                .limit(1)
+                select(JobRow).join(JobSourceRow).where(JobSourceRow.canonical_url == url).limit(1)
             )
         ).first()
         return self._hydrate(row) if row else None
@@ -74,12 +72,18 @@ class JobRepository:
         """
         row = (
             await self._session.scalars(
-                select(JobRow).where(JobRow.identity_key == job.identity_key).limit(1)
+                select(JobRow)
+                .options(selectinload(JobRow.sources))
+                .where(JobRow.identity_key == job.identity_key)
+                .limit(1)
             )
         ).first()
         if row is None:
             row = job_to_row(job)
             self._session.add(row)
+            await self._session.flush()
+            for record in job.sources:
+                self._session.add(source_record_to_row(record, row.id))
             await self._session.flush()
             return job, True
 
@@ -102,6 +106,7 @@ class JobRepository:
             setattr(row, key, value)
         row.last_seen_at = max(row.last_seen_at, job.last_seen_at)
         await self._session.flush()
+        await self._session.refresh(row, attribute_names=["sources"])
         return self._hydrate(row), False
 
     async def add_source_record(self, job_id: str, record: JobSourceRecord) -> None:
@@ -150,18 +155,11 @@ class JobRepository:
         # max(scored_at) is portable across SQLite and PostgreSQL.
         if recommendation is not None or min_score is not None:
             latest = select(func.max(FitScoreRow.scored_at)).where(FitScoreRow.job_id == JobRow.id)
-            statement = (
-                statement.join(FitScoreRow)
-                .where(FitScoreRow.scored_at == latest)
-            )
+            statement = statement.join(FitScoreRow).where(FitScoreRow.scored_at == latest)
             if recommendation is not None:
                 statement = statement.where(FitScoreRow.recommendation == recommendation)
             if min_score is not None:
                 statement = statement.where(FitScoreRow.overall >= min_score)
-
-        total = await self._session.scalar(
-            select(func.count()).select_from(statement.subquery())
-        ) or 0
 
         if has_score is not None:
             scored_ids = select(FitScoreRow.job_id).distinct()
@@ -170,6 +168,10 @@ class JobRepository:
                 if has_score
                 else statement.where(JobRow.id.not_in(scored_ids))
             )
+
+        total = (
+            await self._session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+        )
 
         sort_column = getattr(JobRow, sort, JobRow.discovered_at)
         statement = statement.order_by(sort_column.desc() if descending else sort_column.asc())

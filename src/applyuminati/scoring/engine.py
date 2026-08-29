@@ -49,9 +49,7 @@ def _explain(dimensions: list[DimensionScore]) -> str:
         (d for d in dimensions if d.weight > 0), key=lambda d: d.weighted, reverse=True
     )
     top = sorted_dims[:2]
-    weak = sorted(
-        (d for d in dimensions if d.weight > 0), key=lambda d: d.score
-    )[:1]
+    weak = sorted((d for d in dimensions if d.weight > 0), key=lambda d: d.score)[:1]
     parts = [f"Strongest: {d.dimension.value} ({d.rationale})." for d in top]
     if weak:
         parts.append(f"Weakest: {weak[0].dimension.value} ({weak[0].rationale}).")
@@ -86,7 +84,10 @@ def score_job(
     elif baseline < strategy.skip_below_score:
         overall = baseline
         recommendation = Recommendation.SKIP
-    elif baseline >= strategy.minimum_fit_score and confidence >= strategy.minimum_evidence_confidence:
+    elif (
+        baseline >= strategy.minimum_fit_score
+        and confidence >= strategy.minimum_evidence_confidence
+    ):
         overall = baseline
         recommendation = Recommendation.APPLY
     else:

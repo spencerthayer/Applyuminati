@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from applyuminati.core.errors import ConfigurationError
 from applyuminati.core.logging import get_logger
 from applyuminati.core.settings import ProviderConfig
-from applyuminati.llm.base import LLMCallRecord, TokenUsage
+from applyuminati.llm.base import LLMCallRecord
 
 log = get_logger(__name__)
 
@@ -40,7 +38,12 @@ class UsageTracker:
             self._total_cost += call.estimated_cost_usd
         key = call.provider
         if key not in self._by_provider:
-            self._by_provider[key] = {"calls": 0, "cost": 0.0, "input_tokens": 0, "output_tokens": 0}
+            self._by_provider[key] = {
+                "calls": 0,
+                "cost": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
         bucket = self._by_provider[key]
         bucket["calls"] += 1
         bucket["cost"] += call.estimated_cost_usd or 0.0

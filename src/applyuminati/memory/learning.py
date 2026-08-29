@@ -13,10 +13,8 @@ a phrasing is correlation, and the derived memory says so.
 
 from __future__ import annotations
 
-from datetime import timedelta
 from difflib import SequenceMatcher
 
-from applyuminati.core.clock import utcnow
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.models.memory import (
     ApprovalSignal,
@@ -32,9 +30,7 @@ from applyuminati.memory.store import MemoryStore
 __all__ = ["apply_signal", "diff_signal", "record_approval", "record_outcome"]
 
 
-def diff_signal(
-    generated: str, user_text: str, **context: object
-) -> LearningSignal:
+def diff_signal(generated: str, user_text: str, **context: object) -> LearningSignal:
     """Classify the difference between generated and user-edited text."""
     edit_kinds: list[EditKind] = []
 
@@ -47,9 +43,7 @@ def diff_signal(
         ratio = SequenceMatcher(None, generated, user_text).ratio()
         if ratio < 0.3:
             edit_kinds.append(EditKind.WORDING)
-        if len(user_text) < len(generated) * 0.6:
-            edit_kinds.append(EditKind.LENGTH)
-        elif len(user_text) > len(generated) * 1.4:
+        if len(user_text) < len(generated) * 0.6 or len(user_text) > len(generated) * 1.4:
             edit_kinds.append(EditKind.LENGTH)
 
         # Detect numeric changes → fact correction.
@@ -67,9 +61,11 @@ def diff_signal(
             edit_kinds.append(EditKind.ORDERING)
 
         # Tone markers.
-        if any(marker in user_text.lower() for marker in ["however", "notably", "importantly"]):
-            if not any(marker in generated.lower() for marker in ["however", "notably", "importantly"]):
-                edit_kinds.append(EditKind.TONE)
+        tone_markers = ["however", "notably", "importantly"]
+        if any(marker in user_text.lower() for marker in tone_markers) and not any(
+            marker in generated.lower() for marker in tone_markers
+        ):
+            edit_kinds.append(EditKind.TONE)
 
     if not edit_kinds:
         edit_kinds.append(EditKind.WORDING)
@@ -137,8 +133,12 @@ async def apply_signal(signal: LearningSignal, store: MemoryStore) -> list[Memor
             MemoryKind.FACTUAL_CAREER,
             scope=scope,
             key=f"fact_correction:{signal.target_path or 'unknown'}",
-            content=f"User corrected a numeric value. Generated: {signal.generated_text[:200]!r}, "
-            f"User: {signal.user_text[:200]!r}. This is a correction signal, NOT a canonical fact update.",
+            content=(
+                f"User corrected a numeric value. "
+                f"Generated: {signal.generated_text[:200]!r}, "
+                f"User: {signal.user_text[:200]!r}. "
+                f"This is a correction signal, NOT a canonical fact update."
+            ),
             level=AssertionLevel.INFERRED,
             provenance=[
                 Provenance(
@@ -165,7 +165,10 @@ async def record_approval(signal: ApprovalSignal, store: MemoryStore) -> MemoryR
         MemoryKind.USER_PREFERENCE,
         scope=f"subject:{signal.subject_kind}",
         key=signal.subject_key,
-        content=f"User {'approved' if signal.approved else 'rejected'} {signal.subject_kind}: {signal.subject_key}",
+        content=(
+            f"User {'approved' if signal.approved else 'rejected'} "
+            f"{signal.subject_kind}: {signal.subject_key}"
+        ),
         level=AssertionLevel.PREFERENCE,
         data={"approved": signal.approved, "reason": signal.reason, "job_id": signal.job_id},
         provenance=[
@@ -189,7 +192,8 @@ async def record_outcome(outcome: OutcomeRecord, store: MemoryStore) -> MemoryRe
         scope=f"application:{outcome.application_id}",
         key=f"outcome:{outcome.outcome}",
         content=(
-            f"Application to {outcome.source or 'unknown source'} via {outcome.ats or 'unknown ATS'} "
+            f"Application to {outcome.source or 'unknown source'} "
+            f"via {outcome.ats or 'unknown ATS'} "
             f"with fit score {outcome.fit_score} resulted in {outcome.outcome} "
             f"after {outcome.days_to_outcome:.1f} days. "
             f"Causation is NOT known."

@@ -78,7 +78,9 @@ class Repositories:
 class ServiceContainer:
     """Process-wide wiring. Build one; share it."""
 
-    def __init__(self, settings: Settings | None = None, *, database: Database | None = None) -> None:
+    def __init__(
+        self, settings: Settings | None = None, *, database: Database | None = None
+    ) -> None:
         self.settings = settings or get_settings()
         configure_logging(level=self.settings.log_level, fmt=self.settings.log_format)
         self.settings.ensure_directories()

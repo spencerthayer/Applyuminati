@@ -11,7 +11,7 @@ from typing import Protocol
 
 from applyuminati.core.models.jsonresume import JsonResume
 
-__all__ = ["JsonRenderer", "MarkdownRenderer", "RENDERER_REGISTRY", "ResumeRenderer"]
+__all__ = ["RENDERER_REGISTRY", "JsonRenderer", "MarkdownRenderer", "ResumeRenderer"]
 
 
 class ResumeRenderer(Protocol):
@@ -49,7 +49,7 @@ class MarkdownRenderer:
         for work in resume.work:
             lines.append("")
             lines.append(f"## {work.position or ''} — {work.name or ''}")
-            dates = " – ".join(filter(None, [work.startDate, work.endDate]))
+            dates = " - ".join(filter(None, [work.startDate, work.endDate]))
             if dates:
                 lines.append(f"*{dates}*")
             if work.summary:

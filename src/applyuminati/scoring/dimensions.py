@@ -21,7 +21,6 @@ from applyuminati.core.models.scoring import (
     MissingRequirement,
     ScoreDimension,
 )
-from applyuminati.core.provenance import AssertionLevel
 from applyuminati.core.strategy import RemotePreference, SearchStrategy, Strictness
 
 __all__ = ["score_dimensions"]
@@ -57,6 +56,8 @@ def _title_match(job: Job, profile: CareerProfile, strategy: SearchStrategy) -> 
     if anti_hit:
         score *= 0.6
     rationale = f"{round(best * 100)}% title overlap with nearest target"
+    if matched:
+        rationale += f" (shared terms: {', '.join(matched)})"
     if anti_hit:
         rationale += f"; anti-title matched: {', '.join(anti_hit)}"
     return DimensionScore(
@@ -112,33 +113,33 @@ def _seniority(job: Job, profile: CareerProfile, strategy: SearchStrategy) -> Di
     )
 
 
-def _skills(job: Job, profile: CareerProfile) -> tuple[set[str], set[str]]:
-    """Return (matched, missing) skill sets from requirements text."""
+def _skills(job: Job, profile: CareerProfile) -> tuple[set[str], set[str], int]:
+    """Return (matched skill tokens, missing requirement lines, matched line count)."""
     profile_skills = profile.skill_names()
     if not job.requirements:
-        return set(), set()
+        return set(), set(), 0
     matched: set[str] = set()
     missing: set[str] = set()
+    matched_lines = 0
     for requirement in job.requirements:
         req_tokens = _tokens(requirement)
         hit = {tok for tok in req_tokens if tok in profile_skills}
         if hit:
             matched |= hit
+            matched_lines += 1
         else:
             missing.add(requirement.strip()[:120])
-    return matched, missing
+    return matched, missing, matched_lines
 
 
 def _required_skills(
-    job: Job, profile: CareerProfile, strategy: SearchStrategy  # noqa: ARG001
+    job: Job, profile: CareerProfile, strategy: SearchStrategy
 ) -> tuple[DimensionScore, list[MatchedEvidence], list[MissingRequirement]]:
-    matched, missing = _skills(job, profile)
+    matched, missing, matched_lines = _skills(job, profile)
     total = len(job.requirements) or 1
-    score = len(matched) / total if matched else 0.0
+    score = matched_lines / total
     evidence = [
-        MatchedEvidence(
-            requirement=skill, claim_id=None, excerpt=None, strength=0.8
-        )
+        MatchedEvidence(requirement=skill, claim_id=None, excerpt=None, strength=0.8)
         for skill in sorted(matched)
     ]
     requirements = [
@@ -150,7 +151,9 @@ def _required_skills(
         )
         for req in sorted(missing)
     ]
-    rationale = f"{len(matched)} of {len(job.requirements)} requirement lines matched profile skills"
+    rationale = (
+        f"{len(matched)} of {len(job.requirements)} requirement lines matched profile skills"
+    )
     return (
         DimensionScore(
             dimension=ScoreDimension.REQUIRED_SKILLS,
@@ -189,7 +192,7 @@ def _preferred_skills(job: Job, profile: CareerProfile) -> DimensionScore:
 
 
 def _demonstrated_experience(
-    job: Job, profile: CareerProfile, strategy: SearchStrategy  # noqa: ARG001
+    job: Job, profile: CareerProfile, strategy: SearchStrategy
 ) -> DimensionScore:
     job_skills = {s.lower() for s in job.skills}
     if not job_skills:
@@ -295,7 +298,10 @@ def _compensation(
         severity=BlockerSeverity.HARD
         if strategy.compensation_strictness is Strictness.HARD
         else BlockerSeverity.SIGNIFICANT,
-        note=f"posting {offered.raw_text or 'range'} vs floor {requirement.minimum} {requirement.currency}",
+        note=(
+            f"posting {offered.raw_text or 'range'} vs floor "
+            f"{requirement.minimum} {requirement.currency}"
+        ),
     )
     return (
         DimensionScore(
@@ -332,7 +338,11 @@ def _location(job: Job, profile: CareerProfile, strategy: SearchStrategy) -> Dim
     target_texts = [loc.display().lower() for loc in profile.targets.locations]
     job_texts = [loc.display().lower() for loc in job.locations] or [job.company.lower()]
     best = max(
-        (SequenceMatcher(None, target, job_text).ratio() for target in target_texts for job_text in job_texts),
+        (
+            SequenceMatcher(None, target, job_text).ratio()
+            for target in target_texts
+            for job_text in job_texts
+        ),
         default=0.0,
     )
     if best >= 0.8:
@@ -348,7 +358,11 @@ def _location(job: Job, profile: CareerProfile, strategy: SearchStrategy) -> Dim
         score = max(score, 0.5)
         rationale += " (location strictness ignored)"
     return DimensionScore(
-        dimension=ScoreDimension.LOCATION, score=score, weight=0.0, confidence=0.6, rationale=rationale
+        dimension=ScoreDimension.LOCATION,
+        score=score,
+        weight=0.0,
+        confidence=0.6,
+        rationale=rationale,
     )
 
 
@@ -390,9 +404,18 @@ def _work_authorization(
     worst_score = 1.0
     for loc in job.locations:
         status = profile.eligibility.status_for(loc.country_code)
-        if status.value in ("citizen", "permanent_resident", "work_visa", "student_visa", "working_holiday"):
+        if status.value in (
+            "citizen",
+            "permanent_resident",
+            "work_visa",
+            "student_visa",
+            "working_holiday",
+        ):
             continue
-        if status.value == "requires_sponsorship" and profile.eligibility.requires_sponsorship is False:
+        if (
+            status.value == "requires_sponsorship"
+            and profile.eligibility.requires_sponsorship is False
+        ):
             worst_score = min(worst_score, 0.1)
             blockers.append(
                 MissingRequirement(
@@ -456,7 +479,9 @@ def _user_preference(job: Job, profile: CareerProfile) -> DimensionScore:
             rationale="company is on the preferred list",
         )
     industry_hits = [
-        ind for ind in profile.strategy.preferred_industries if ind.lower() in (job.description or "").lower()
+        ind
+        for ind in profile.strategy.preferred_industries
+        if ind.lower() in (job.description or "").lower()
     ]
     if industry_hits:
         return DimensionScore(

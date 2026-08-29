@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +17,7 @@ from rich.console import Console
 from rich.table import Table
 
 from applyuminati import __version__
-from applyuminati.core.settings import ExecutionMode, Settings, get_settings
+from applyuminati.core.settings import get_settings
 from applyuminati.services.container import ServiceContainer, get_container
 
 app = typer.Typer(
@@ -29,7 +28,7 @@ app = typer.Typer(
 console = Console()
 
 
-def _run_async(coro: Any) -> Any:  # noqa: ANN401
+def _run_async(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
@@ -80,9 +79,13 @@ def doctor() -> None:
         table.add_column("Detail")
         table.add_row("Database", "ok" if db_ok else "FAIL", str(container.settings.db_path))
         table.add_row("Schema", schema or "not migrated", "")
-        table.add_row("Profile", "configured" if summary["profile_configured"] else "not imported", "")
+        table.add_row(
+            "Profile", "configured" if summary["profile_configured"] else "not imported", ""
+        )
         table.add_row("Mode", summary["execution_mode"], "")
-        table.add_row("Sources", ", ".join(summary.get("enabled_sources", [])) or "(none enabled)", "")
+        table.add_row(
+            "Sources", ", ".join(summary.get("enabled_sources", [])) or "(none enabled)", ""
+        )
         console.print(table)
 
         bt = Table(title="Backends")
@@ -273,7 +276,9 @@ def jobs_discover(
             from applyuminati.services.discovery_service import DiscoveryService
 
             svc = DiscoveryService(repos, container.settings)
-            run = await svc.discover(sources=source or None, queries=query or None, triggered_by="cli")
+            run = await svc.discover(
+                sources=source or None, queries=query or None, triggered_by="cli"
+            )
         console.print(f"[green]Discovery complete: {run.state.value}[/green]")
         console.print(f"  Discovered: {run.stats.get('jobs_discovered', 0)}")
         console.print(f"  Created:    {run.stats.get('jobs_created', 0)}")

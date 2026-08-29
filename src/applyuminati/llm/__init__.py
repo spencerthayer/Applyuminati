@@ -22,6 +22,7 @@ from applyuminati.llm.usage import UsageTracker
 
 __all__ = [
     "LLM_REGISTRY",
+    "PROMPT_REGISTRY",
     "CompletionRequest",
     "CompletionResponse",
     "LLMCallRecord",
@@ -30,7 +31,6 @@ __all__ = [
     "LLMProvider",
     "Message",
     "ModelT",
-    "PROMPT_REGISTRY",
     "PromptTemplate",
     "ProviderMetadata",
     "ProviderSelection",
@@ -40,7 +40,7 @@ __all__ = [
     "extract_json",
     "get_prompt",
     "json_schema_for",
+    "llm_plugin",
     "register",
     "request_structured",
 ]
-

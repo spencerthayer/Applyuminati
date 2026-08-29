@@ -47,7 +47,7 @@ class MemoryRetriever:
             )
             all_records.extend(records)
 
-        # Rank by confidence × recency (newer updated_at wins ties).
+        # Rank by confidence x recency (newer updated_at wins ties).
         all_records.sort(key=lambda r: (r.confidence, r.updated_at), reverse=True)
 
         # Deduplicate by (kind, scope, key).

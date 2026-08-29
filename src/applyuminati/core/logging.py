@@ -26,10 +26,10 @@ _configured = False
 
 
 def _redaction_processor(
-    _logger: Any,  # noqa: ANN401
+    _logger: Any,
     _name: str,
-    event_dict: dict[str, Any],
-) -> dict[str, Any]:
+    event_dict: structlog.types.EventDict,
+) -> structlog.types.EventDict:
     return {key: redact_value(value) for key, value in event_dict.items()}
 
 
@@ -72,7 +72,7 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
 
 
 @contextmanager
-def bound_context(**values: Any) -> Iterator[None]:  # noqa: ANN401
+def bound_context(**values: Any) -> Iterator[None]:
     """Bind ``values`` (run_id, task_id, source, stage…) for the enclosed block."""
     tokens = structlog.contextvars.bind_contextvars(**values)
     try:

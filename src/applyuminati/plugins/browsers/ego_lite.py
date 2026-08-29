@@ -554,8 +554,10 @@ class EgoLiteSession:
         return self._observation_from(envelope.get("value") or {})
 
     def _observation_from(self, value: dict[str, Any]) -> PageObservation:
-        info = value.get("info") if isinstance(value.get("info"), dict) else {}
-        scan = value.get("scan") if isinstance(value.get("scan"), dict) else {}
+        raw_info = value.get("info")
+        info: dict[str, Any] = raw_info if isinstance(raw_info, dict) else {}
+        raw_scan = value.get("scan")
+        scan: dict[str, Any] = raw_scan if isinstance(raw_scan, dict) else {}
         snapshot_text = value.get("text")
 
         url = str(scan.get("url") or info.get("url") or self._url or "")
@@ -640,26 +642,24 @@ class EgoLiteSession:
         # No dedicated select helper exists; set the value through the DOM and
         # dispatch the events frameworks listen for.
         script = (
-            "(() => { const el = document.querySelector(%s);"
-            " if (!el) throw new Error('no such control: ' + %s);"
-            " el.value = %s;"
+            f"(() => {{ const el = document.querySelector({_js(target)});"
+            f" if (!el) throw new Error('no such control: ' + {_js(target)});"
+            f" el.value = {_js(option)};"
             " el.dispatchEvent(new Event('input', {bubbles: true}));"
             " el.dispatchEvent(new Event('change', {bubbles: true}));"
             " return el.value; })()"
-        ) % (_js(target), _js(target), _js(option))
-        return await self._act(
-            "select_option", _body_action(f"js({_js(script)})"), records=locator
         )
+        return await self._act("select_option", _body_action(f"js({_js(script)})"), records=locator)
 
     async def set_checked(self, locator: str, checked: bool) -> ActionResult:
         """Set a checkbox/radio to ``checked``, clicking only when needed."""
         target = self._target(locator)
         script = (
-            "(() => { const el = document.querySelector(%s);"
-            " if (!el) throw new Error('no such control: ' + %s);"
-            " if (Boolean(el.checked) !== %s) { el.click(); }"
+            f"(() => {{ const el = document.querySelector({_js(target)});"
+            f" if (!el) throw new Error('no such control: ' + {_js(target)});"
+            f" if (Boolean(el.checked) !== {'true' if checked else 'false'}) {{ el.click(); }}"
             " return Boolean(el.checked); })()"
-        ) % (_js(target), _js(target), "true" if checked else "false")
+        )
         return await self._act("set_checked", _body_action(f"js({_js(script)})"), records=locator)
 
     async def upload_file(self, locator: str, path: Path) -> ActionResult:
@@ -871,9 +871,7 @@ class EgoLiteBackend:
         self._helper = helper
 
         try:
-            smoke = await _run_helper(
-                helper, SMOKE_SCRIPT, env=self._env, timeout=_PROBE_TIMEOUT
-            )
+            smoke = await _run_helper(helper, SMOKE_SCRIPT, env=self._env, timeout=_PROBE_TIMEOUT)
         except EgoHelperError as exc:
             return HealthReport(
                 plugin=SLUG,
@@ -943,9 +941,9 @@ class EgoLiteBackend:
             surface=await self.detect_surface(),
         )
         if resume:
-            session._completed_fields = list(resume.completed_fields)  # noqa: SLF001
-            session._artifacts = list(resume.artifacts)  # noqa: SLF001
-            session._url = resume.url  # noqa: SLF001
+            session._completed_fields = list(resume.completed_fields)
+            session._artifacts = list(resume.artifacts)
+            session._url = resume.url
         return session
 
     async def aclose(self) -> None:

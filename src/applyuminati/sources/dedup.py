@@ -16,8 +16,7 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 
-from applyuminati.core.models.job import Job, JobSourceRecord, SourceTier
-from applyuminati.core.models.job import canonicalize_url
+from applyuminati.core.models.job import Job, JobSourceRecord, SourceTier, canonicalize_url
 
 __all__ = ["Deduplicator", "similarity"]
 
@@ -66,14 +65,12 @@ class Deduplicator:
         incoming_urls = {record.canonical_url for record in incoming.sources}
         if existing_urls & incoming_urls:
             return True
-        if (
+        return bool(
             existing.company_key
             and existing.company_key == incoming.company_key
             and similarity(existing, incoming) >= _SIMILARITY_THRESHOLD
             and _locations_compatible(existing, incoming)
-        ):
-            return True
-        return False
+        )
 
     def merge(self, existing: Job, incoming: Job) -> Job:
         """Fold ``incoming`` into ``existing``, keeping every observation."""
@@ -93,13 +90,17 @@ class Deduplicator:
             SourceTier.AGGREGATOR: 1,
             SourceTier.DERIVED: 0,
         }
-        winner = existing if tier_rank[existing.best_tier] >= tier_rank[incoming.best_tier] else incoming
+        winner = (
+            existing if tier_rank[existing.best_tier] >= tier_rank[incoming.best_tier] else incoming
+        )
 
-        merged_ids = list(existing.merged_job_ids) + [incoming.id] + list(incoming.merged_job_ids)
+        merged_ids = [*existing.merged_job_ids, incoming.id, *incoming.merged_job_ids]
 
         # Union content lists; keep the more specific compensation.
         requirements = list(dict.fromkeys(existing.requirements + incoming.requirements))
-        preferred = list(dict.fromkeys(existing.preferred_qualifications + incoming.preferred_qualifications))
+        preferred = list(
+            dict.fromkeys(existing.preferred_qualifications + incoming.preferred_qualifications)
+        )
         skills = sorted(set(existing.skills) | set(incoming.skills))
         compensation = incoming.compensation or existing.compensation
 

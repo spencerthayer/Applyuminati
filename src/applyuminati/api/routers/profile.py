@@ -19,19 +19,6 @@ from applyuminati.services.profile_service import ProfileService
 router = APIRouter(prefix="/api/v1/profile", tags=["profile"])
 
 
-def _to_response(svc: ProfileService, profile=None) -> ProfileResponse:
-    """Build a ProfileResponse from the service's view."""
-    import asyncio
-
-    view = asyncio.get_event_loop().run_until_complete(svc.view()) if False else None
-    # We can't call async view() here; the caller must pass the view.
-    raise RuntimeError("use _to_response_with_view instead")
-
-
-def _response_from_view(view, strategy, targets) -> ProfileResponse:
-    return profile_to_dto(view, strategy=strategy, targets=targets)
-
-
 @router.get("", response_model=ProfileResponse)
 async def get_profile(repos: Repositories = Depends(get_repositories)) -> ProfileResponse:
     svc = ProfileService(repos)
@@ -40,7 +27,9 @@ async def get_profile(repos: Repositories = Depends(get_repositories)) -> Profil
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     view = await svc.view()
-    return profile_to_dto(view, strategy=profile.strategy, targets=profile.targets.model_dump(mode="json"))
+    return profile_to_dto(
+        view, strategy=profile.strategy, targets=profile.targets.model_dump(mode="json")
+    )
 
 
 @router.post("/import", response_model=ProfileImportResponse)
@@ -58,7 +47,8 @@ async def import_profile(
     profile = await svc.get()
     return ProfileImportResponse(
         profile=profile_to_dto(
-            result.profile, strategy=profile.strategy,
+            result.profile,
+            strategy=profile.strategy,
             targets=profile.targets.model_dump(mode="json"),
         ),
         claims_created=result.claims_created,
@@ -89,4 +79,6 @@ async def update_preferences(
     except ConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
     view = await svc.view()
-    return profile_to_dto(view, strategy=profile.strategy, targets=profile.targets.model_dump(mode="json"))
+    return profile_to_dto(
+        view, strategy=profile.strategy, targets=profile.targets.model_dump(mode="json")
+    )

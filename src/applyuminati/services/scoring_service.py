@@ -40,7 +40,9 @@ _TARGET_STATE: dict[Recommendation, ApplicationState] = {
 
 
 class ScoringService:
-    def __init__(self, repos: Repositories, settings: Settings, llm: LLMClient | None = None) -> None:
+    def __init__(
+        self, repos: Repositories, settings: Settings, llm: LLMClient | None = None
+    ) -> None:
         self._repos = repos
         self._settings = settings
         self._llm = llm

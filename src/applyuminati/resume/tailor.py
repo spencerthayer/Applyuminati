@@ -14,7 +14,9 @@ violation discards the LLM output and falls back to the deterministic result.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import Any, Protocol
+
+from pydantic import BaseModel, Field
 
 from applyuminati.core.logging import get_logger
 from applyuminati.core.models.job import Job
@@ -24,8 +26,32 @@ from applyuminati.core.provenance import EvidenceLink
 from applyuminati.resume.evidence import EvidenceIndex
 from applyuminati.resume.guard import FabricationGuard, GuardReport
 
-if TYPE_CHECKING:
-    from applyuminati.llm.client import LLMClient
+
+class _StructuredCompletionClient(Protocol):
+    """The `LLMClient` capabilities this module needs.
+
+    Declared locally, rather than importing `applyuminati.llm.client.LLMClient`,
+    because `resume` and `llm` are independent siblings in the layered
+    architecture: resume tailoring must stay usable deterministically with no
+    LLM dependency at all. Satisfied structurally by the real client.
+    """
+
+    @property
+    def is_configured(self) -> bool: ...
+
+    async def structured(
+        self, prompt_id: str, *, schema: type[BaseModel], **kwargs: Any
+    ) -> tuple[Any, Any]: ...
+
+
+class _TailoredBullet(BaseModel):
+    claim_id: str
+    text: str
+
+
+class _TailorSchema(BaseModel):
+    bullets: list[_TailoredBullet] = Field(default_factory=list)
+
 
 log = get_logger(__name__)
 
@@ -54,7 +80,7 @@ class ResumeTailor:
         self,
         job: Job,
         *,
-        client: LLMClient | None = None,
+        client: _StructuredCompletionClient | None = None,
         allow_llm: bool = True,
     ) -> TailorResult:
         deterministic = self._deterministic(job)
@@ -63,13 +89,17 @@ class ResumeTailor:
 
         try:
             llm_resume = await self._llm_rewrite(job, deterministic, client)
-        except Exception as exc:  # noqa: BLE001 - LLM failure falls back
+        except Exception as exc:
             log.warning("tailor.llm_failed", job_id=job.id, error=str(exc))
             return TailorResult(resume=deterministic, guard=self._guard.check(deterministic))
 
         report = self._guard.check(llm_resume)
         if not report.ok:
-            log.warning("tailor.llm_rejected_by_guard", job_id=job.id, violations=len(report.hard_violations))
+            log.warning(
+                "tailor.llm_rejected_by_guard",
+                job_id=job.id,
+                violations=len(report.hard_violations),
+            )
             return TailorResult(resume=deterministic, guard=self._guard.check(deterministic))
         return TailorResult(resume=llm_resume, guard=report, used_llm=True)
 
@@ -83,9 +113,9 @@ class ResumeTailor:
 
         reordered_work: list[ResumeWork] = []
         for work in self._profile.resume.work:
-            scored_highlights = sorted(
-                work.highlights, key=_highlight_score, reverse=True
-            )[:_MAX_HIGHLIGHTS_PER_ROLE]
+            scored_highlights = sorted(work.highlights, key=_highlight_score, reverse=True)[
+                :_MAX_HIGHLIGHTS_PER_ROLE
+            ]
             reordered_work.append(work.model_copy(update={"highlights": scored_highlights}))
 
         # Reorder roles by the sum of their highlight scores.
@@ -95,10 +125,15 @@ class ResumeTailor:
 
         # Rewrite the summary only if the profile has one; keep it truthful.
         summary = self._profile.resume.basics.summary
-        return self._profile.resume.model_copy(update={"work": reordered_work, "basics": self._profile.resume.basics.model_copy(update={"summary": summary})})
+        return self._profile.resume.model_copy(
+            update={
+                "work": reordered_work,
+                "basics": self._profile.resume.basics.model_copy(update={"summary": summary}),
+            }
+        )
 
     async def _llm_rewrite(
-        self, job: Job, deterministic: JsonResume, client: LLMClient
+        self, job: Job, deterministic: JsonResume, client: _StructuredCompletionClient
     ) -> JsonResume:
         """Ask the model to rewrite existing bullets, then splice them back in."""
         result, _ = await client.structured(
@@ -125,15 +160,3 @@ class ResumeTailor:
                 new_highlights.append(rewrites.get(key, highlight))
             new_work.append(work.model_copy(update={"highlights": new_highlights}))
         return deterministic.model_copy(update={"work": new_work})
-
-
-from pydantic import BaseModel, Field  # noqa: E402
-
-
-class _TailoredBullet(BaseModel):
-    claim_id: str
-    text: str
-
-
-class _TailorSchema(BaseModel):
-    bullets: list[_TailoredBullet] = Field(default_factory=list)

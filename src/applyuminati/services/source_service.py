@@ -15,14 +15,16 @@ from applyuminati.core.errors import ConfigurationError
 from applyuminati.core.logging import get_logger
 from applyuminati.core.registry import HealthReport, HealthState, PluginDescriptor
 from applyuminati.core.settings import Settings
-from applyuminati.sources.base import SOURCE_REGISTRY, JobSource
 from applyuminati.services.container import Repositories
 from applyuminati.services.views import SourceView
+from applyuminati.sources.base import SOURCE_REGISTRY, JobSource
 
 log = get_logger(__name__)
 
 
-def _instantiate(descriptor: PluginDescriptor[JobSource], settings: Settings, options: dict[str, Any]) -> JobSource:
+def _instantiate(
+    descriptor: PluginDescriptor[JobSource], settings: Settings, options: dict[str, Any]
+) -> JobSource:
     """Build a source instance, validating its options first."""
     descriptor.validate_options(options)
     return descriptor.create(settings=settings, options=options)
@@ -101,7 +103,7 @@ class SourceService:
             try:
                 source = _instantiate(descriptor, self._settings, options)
                 report = await source.health()
-            except Exception as exc:  # noqa: BLE001 - health must never raise
+            except Exception as exc:
                 report = HealthReport(
                     plugin=descriptor.slug,
                     state=HealthState.UNAVAILABLE,

@@ -8,7 +8,7 @@ from applyuminati.api.dependencies import get_container_dep, get_repositories
 from applyuminati.api.mappers import job_to_detail, job_to_summary
 from applyuminati.api.schemas import JobDetail, JobSummary, Page
 from applyuminati.core.errors import NotFoundError
-from applyuminati.core.models.common import EmploymentType, RemoteMode
+from applyuminati.core.models.common import RemoteMode
 from applyuminati.core.models.job import VerificationState
 from applyuminati.core.models.scoring import Recommendation
 from applyuminati.services.container import Repositories, ServiceContainer

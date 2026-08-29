@@ -134,9 +134,7 @@ async def request_structured(
     current_request = request
 
     if provider.metadata.supports(LLMCapability.STRUCTURED_OUTPUT):
-        current_request = request.model_copy(
-            update={"response_schema": json_schema_for(schema)}
-        )
+        current_request = request.model_copy(update={"response_schema": json_schema_for(schema)})
 
     while True:
         response = await provider.complete(current_request)

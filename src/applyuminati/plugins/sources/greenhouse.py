@@ -11,7 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from applyuminati.core.errors import ApplyuminatiError
+from applyuminati.core.errors import ApplyuminatiError, FailureCategory
 from applyuminati.core.models.common import EmploymentType, Location, RemoteMode
 from applyuminati.core.models.job import AtsVendor, Job, SourceTier, VerificationState
 from applyuminati.core.registry import HealthReport, HealthState
@@ -83,10 +83,8 @@ class GreenhouseSource(JobSource):
             return HealthReport(
                 plugin="greenhouse", state=HealthState.UNAVAILABLE, detail=exc.message
             )
-        except Exception as exc:  # noqa: BLE001
-            return HealthReport(
-                plugin="greenhouse", state=HealthState.UNAVAILABLE, detail=str(exc)
-            )
+        except Exception as exc:
+            return HealthReport(plugin="greenhouse", state=HealthState.UNAVAILABLE, detail=str(exc))
         return HealthReport(
             plugin="greenhouse",
             state=HealthState.HEALTHY,
@@ -107,11 +105,11 @@ class GreenhouseSource(JobSource):
             except ApplyuminatiError as exc:
                 failures.append(SourceFailure.from_error("greenhouse", exc, stage="list"))
                 continue
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 failures.append(
                     SourceFailure(
                         source="greenhouse",
-                        category="unknown",
+                        category=FailureCategory.UNKNOWN,
                         message=f"{type(exc).__name__}: {exc}",
                         stage="list",
                     )

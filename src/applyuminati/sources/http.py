@@ -22,7 +22,7 @@ from applyuminati.core.errors import (
     TransientNetworkError,
 )
 from applyuminati.core.settings import Settings
-from applyuminati.sources.base import RateLimit, SourceMetadata
+from applyuminati.sources.base import SourceMetadata
 
 __all__ = ["SourceHttpClient"]
 
@@ -113,7 +113,7 @@ class SourceHttpClient:
             details={"status": response.status_code},
         )
 
-    async def get_json(self, url: str, *, params: dict[str, Any] | None = None) -> Any:  # noqa: ANN401
+    async def get_json(self, url: str, *, params: dict[str, Any] | None = None) -> Any:
         await self._throttle()
         try:
             response = await self._client.get(url, params=params)
@@ -143,7 +143,9 @@ class SourceHttpClient:
         except httpx.TimeoutException as exc:
             raise TransientNetworkError(f"request timed out: {exc}", code="source.timeout") from exc
         except httpx.TransportError as exc:
-            raise TransientNetworkError(f"transport error: {exc}", code="source.transport_error") from exc
+            raise TransientNetworkError(
+                f"transport error: {exc}", code="source.transport_error"
+            ) from exc
         self._translate(response)
         return response.text
 
@@ -154,7 +156,9 @@ class SourceHttpClient:
         except httpx.TimeoutException as exc:
             raise TransientNetworkError(f"request timed out: {exc}", code="source.timeout") from exc
         except httpx.TransportError as exc:
-            raise TransientNetworkError(f"transport error: {exc}", code="source.transport_error") from exc
+            raise TransientNetworkError(
+                f"transport error: {exc}", code="source.transport_error"
+            ) from exc
         # HEAD may return 405; follow up with a GET to learn the real status.
         if response.status_code == 405:
             return await self._get_status(url)
@@ -164,7 +168,9 @@ class SourceHttpClient:
         try:
             response = await self._client.get(url)
         except httpx.TransportError as exc:
-            raise TransientNetworkError(f"transport error: {exc}", code="source.transport_error") from exc
+            raise TransientNetworkError(
+                f"transport error: {exc}", code="source.transport_error"
+            ) from exc
         return response.status_code
 
     async def aclose(self) -> None:

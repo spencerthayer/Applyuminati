@@ -25,12 +25,14 @@ from applyuminati.browser.base import (
     PageObservation,
     browser_plugin,
 )
-from applyuminati.core.clock import utcnow
 from applyuminati.core.ids import new_ulid
+from applyuminati.core.logging import get_logger
 from applyuminati.core.registry import HealthReport, HealthState
 from applyuminati.core.settings import Settings
 
-__all__ = ["PlaywrightBackend", "PlaywrightSession", "PLUGIN"]
+log = get_logger(__name__)
+
+__all__ = ["PLUGIN", "PlaywrightBackend", "PlaywrightSession"]
 
 _CAPABILITIES = frozenset(
     {
@@ -82,7 +84,11 @@ class PlaywrightSession(BrowserSession):
         elements = await self._extract_controls()
         condition = self._detect_condition(url, text or "")
         return PageObservation(
-            url=url, title=title, text=text, elements=elements, condition=condition,
+            url=url,
+            title=title,
+            text=text,
+            elements=elements,
+            condition=condition,
         )
 
     async def find_controls(self, *, role: ElementRole | None = None) -> list[PageElement]:
@@ -95,15 +101,24 @@ class PlaywrightSession(BrowserSession):
         start = time.perf_counter()
         try:
             await self._page.fill(locator, value)
-            return ActionResult(ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000)
+            return ActionResult(
+                ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
+            )
         except Exception as exc:
-            return ActionResult(ok=False, action="fill", detail=str(exc), duration_ms=(time.perf_counter() - start) * 1000)
+            return ActionResult(
+                ok=False,
+                action="fill",
+                detail=str(exc),
+                duration_ms=(time.perf_counter() - start) * 1000,
+            )
 
     async def select_option(self, locator: str, option: str) -> ActionResult:
         start = time.perf_counter()
         try:
             await self._page.select_option(locator, option)
-            return ActionResult(ok=True, action="select", duration_ms=(time.perf_counter() - start) * 1000)
+            return ActionResult(
+                ok=True, action="select", duration_ms=(time.perf_counter() - start) * 1000
+            )
         except Exception as exc:
             return ActionResult(ok=False, action="select", detail=str(exc))
 
@@ -130,7 +145,9 @@ class PlaywrightSession(BrowserSession):
 
     async def wait_for_navigation(self, *, timeout_seconds: float | None = None) -> ActionResult:
         try:
-            await self._page.wait_for_load_state("domcontentloaded", timeout=int((timeout_seconds or 30) * 1000))
+            await self._page.wait_for_load_state(
+                "domcontentloaded", timeout=int((timeout_seconds or 30) * 1000)
+            )
             return ActionResult(ok=True, action="wait_navigation")
         except Exception as exc:
             return ActionResult(ok=False, action="wait_navigation", detail=str(exc))
@@ -162,8 +179,8 @@ class PlaywrightSession(BrowserSession):
         try:
             await self._page.close()
             await self._browser.close()
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:
+            log.debug("playwright.close_failed", exc_info=True)
 
     async def _extract_controls(self) -> list[PageElement]:
         elements: list[PageElement] = []
@@ -180,7 +197,11 @@ class PlaywrightSession(BrowserSession):
         ]:
             handles = await self._page.query_selector_all(selector)
             for handle in handles:
-                label = await handle.get_attribute("aria-label") or await handle.get_attribute("name") or await handle.get_attribute("placeholder")
+                label = (
+                    await handle.get_attribute("aria-label")
+                    or await handle.get_attribute("name")
+                    or await handle.get_attribute("placeholder")
+                )
                 name = await handle.get_attribute("name")
                 value = await handle.get_attribute("value")
                 required = await handle.get_attribute("required") is not None
@@ -213,7 +234,9 @@ class PlaywrightSession(BrowserSession):
         lowered = text.lower()[:5000]
         if any(marker in lowered for marker in ["captcha", "are you a robot", "please verify"]):
             return PageCondition.HUMAN_CHALLENGE
-        if any(marker in lowered for marker in ["sign in", "log in", "please log in", "login required"]):
+        if any(
+            marker in lowered for marker in ["sign in", "log in", "please log in", "login required"]
+        ):
             return PageCondition.LOGIN_REQUIRED
         if any(marker in lowered for marker in ["access denied", "blocked", "bot detection"]):
             return PageCondition.AUTOMATION_BLOCKED
@@ -239,7 +262,10 @@ class PlaywrightBackend(BrowserBackend):
             return HealthReport(
                 plugin="playwright",
                 state=HealthState.NOT_INSTALLED,
-                detail="playwright is not installed; run `uv sync --all-extras` then `playwright install chromium`",
+                detail=(
+                    "playwright is not installed; run `uv sync --all-extras` "
+                    "then `playwright install chromium`"
+                ),
             )
         try:
             async with async_playwright() as p:
@@ -250,7 +276,7 @@ class PlaywrightBackend(BrowserBackend):
                 state=HealthState.HEALTHY,
                 detail="Chromium is installed and launchable",
             )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return HealthReport(
                 plugin="playwright",
                 state=HealthState.NOT_INSTALLED,
@@ -267,14 +293,18 @@ class PlaywrightBackend(BrowserBackend):
             self._browser = await self._playwright.chromium.launch(
                 headless=self._settings.browser.headless
             )
-        context = await self._browser.new_context(
+        browser = self._browser
+        if browser is None:
+            msg = "playwright browser failed to start"
+            raise RuntimeError(msg)
+        context = await browser.new_context(
             storage_state=str(self._settings.browser.playwright_storage_state)
             if self._settings.browser.playwright_storage_state
             else None
         )
         page = await context.new_page()
         sid = session_id or new_ulid()
-        return PlaywrightSession(page, self._browser, sid, self._settings)
+        return PlaywrightSession(page, browser, sid, self._settings)
 
     async def aclose(self) -> None:
         if self._browser is not None:

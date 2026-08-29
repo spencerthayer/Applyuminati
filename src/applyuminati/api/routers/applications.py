@@ -14,7 +14,7 @@ from applyuminati.api.schemas import (
 )
 from applyuminati.applications.machine import IllegalTransitionError
 from applyuminati.core.errors import NotFoundError
-from applyuminati.core.models.application import ActorKind, ApplicationState
+from applyuminati.core.models.application import ApplicationState
 from applyuminati.services.application_service import ApplicationService
 from applyuminati.services.container import Repositories
 
@@ -68,5 +68,7 @@ async def transition_application(
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
     except IllegalTransitionError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message) from exc
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=exc.message
+        ) from exc
     return application_to_detail(view)

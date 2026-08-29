@@ -5,19 +5,20 @@ invent" a programmatic check rather than a prompt instruction. Every tailored
 resume is passed through it before it reaches the user or an application.
 """
 
+from applyuminati.resume.evidence import EvidenceIndex
 from applyuminati.resume.exporter import export_json_resume
 from applyuminati.resume.guard import FabricationGuard, GuardReport, GuardSeverity, GuardViolation
 from applyuminati.resume.importer import import_json_resume
 from applyuminati.resume.render import (
+    RENDERER_REGISTRY,
     JsonRenderer,
     MarkdownRenderer,
-    RENDERER_REGISTRY,
     ResumeRenderer,
 )
 from applyuminati.resume.tailor import ResumeTailor, TailorResult
-from applyuminati.resume.evidence import EvidenceIndex
 
 __all__ = [
+    "RENDERER_REGISTRY",
     "EvidenceIndex",
     "FabricationGuard",
     "GuardReport",
@@ -25,7 +26,6 @@ __all__ = [
     "GuardViolation",
     "JsonRenderer",
     "MarkdownRenderer",
-    "RENDERER_REGISTRY",
     "ResumeRenderer",
     "ResumeTailor",
     "TailorResult",

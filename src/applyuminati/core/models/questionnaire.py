@@ -96,7 +96,9 @@ _CLASSIFIERS: tuple[tuple[re.Pattern[str], SensitivityClass], ...] = (
     ),
     (re.compile(r"clearance|ts/sci|secret\b|polygraph", re.I), SensitivityClass.CLEARANCE),
     (
-        re.compile(r"convict|felony|criminal|background check|drug (test|screen)|credit check", re.I),
+        re.compile(
+            r"convict|felony|criminal|background check|drug (test|screen)|credit check", re.I
+        ),
         SensitivityClass.BACKGROUND,
     ),
     (
@@ -187,15 +189,12 @@ class AnswerDraft(BaseModel):
 
     @property
     def is_submittable(self) -> bool:
-        return self.status in (AnswerStatus.READY, AnswerStatus.USER_PROVIDED) and bool(
-            self.answer
-        )
+        return self.status in (AnswerStatus.READY, AnswerStatus.USER_PROVIDED) and bool(self.answer)
 
     @property
     def requires_review(self) -> bool:
         return (
-            self.status is AnswerStatus.NEEDS_REVIEW
-            or self.sensitivity in REVIEW_REQUIRED_CLASSES
+            self.status is AnswerStatus.NEEDS_REVIEW or self.sensitivity in REVIEW_REQUIRED_CLASSES
         )
 
 

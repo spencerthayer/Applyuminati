@@ -6,7 +6,7 @@ JSON columns become ``JSONB`` automatically on Postgres through the variant
 declared in :mod:`applyuminati.db.base`.
 """
 
-from applyuminati.db.base import JSONText, ULID, Base, UTCDateTime
+from applyuminati.db.base import ULID, Base, JSONText, UTCDateTime
 from applyuminati.db.models import (
     ApplicationArtifactRow,
     ApplicationEventRow,
@@ -28,7 +28,6 @@ from applyuminati.db.models import (
 from applyuminati.db.session import Database, create_engine, get_database, set_database, sync_url
 
 __all__ = [
-    "JSONText",
     "ULID",
     "ApplicationArtifactRow",
     "ApplicationEventRow",
@@ -38,6 +37,7 @@ __all__ = [
     "CompanyResearchRow",
     "Database",
     "FitScoreRow",
+    "JSONText",
     "JobRow",
     "JobSourceRow",
     "LLMCallRow",

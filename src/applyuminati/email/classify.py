@@ -7,36 +7,58 @@ configured — a deterministic first pass is the honest floor.
 
 from __future__ import annotations
 
+import contextlib
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
-from applyuminati.core.models.memory import Confidence
 from applyuminati.email.base import EmailClass, EmailMessage, MessageClassification
 
 __all__ = ["classify_message"]
 
 
 _REJECTION_KEYWORDS = (
-    "regret", "unfortunately", "not moving forward", "not to proceed",
-    "decided not to", "other candidates", "position has been filled",
-    "no longer under consideration", "we won't be",
+    "regret",
+    "unfortunately",
+    "not moving forward",
+    "not to proceed",
+    "decided not to",
+    "other candidates",
+    "position has been filled",
+    "no longer under consideration",
+    "we won't be",
 )
 _INTERVIEW_KEYWORDS = (
-    "interview", "schedule a call", "phone screen", "tech screen",
-    "onsite", "virtual interview", "invite you to",
+    "interview",
+    "schedule a call",
+    "phone screen",
+    "tech screen",
+    "onsite",
+    "virtual interview",
+    "invite you to",
 )
 _ASSESSMENT_KEYWORDS = (
-    "assessment", "coding challenge", "take-home", "hackerrank",
-    "codility", "complete the following",
+    "assessment",
+    "coding challenge",
+    "take-home",
+    "hackerrank",
+    "codility",
+    "complete the following",
 )
 _OFFER_KEYWORDS = ("offer", "congratulations", "pleased to offer", "compensation package")
 _RECRUITER_KEYWORDS = (
-    "reached out", "opportunity that matches", "your profile", "wanted to connect",
-    "recruiter", "talent acquisition",
+    "reached out",
+    "opportunity that matches",
+    "your profile",
+    "wanted to connect",
+    "recruiter",
+    "talent acquisition",
 )
 _CONFIRMATION_KEYWORDS = (
-    "received your application", "thank you for applying", "application has been",
-    "we have received", "successfully submitted",
+    "received your application",
+    "thank you for applying",
+    "application has been",
+    "we have received",
+    "successfully submitted",
 )
 
 
@@ -44,10 +66,10 @@ def _extract_dates(text: str) -> list[datetime]:
     dates: list[datetime] = []
     # ISO dates: 2026-01-15
     for match in re.finditer(r"\b(\d{4})-(\d{2})-(\d{2})\b", text):
-        try:
-            dates.append(datetime(int(match.group(1)), int(match.group(2)), int(match.group(3))))
-        except ValueError:
-            pass
+        with contextlib.suppress(ValueError):
+            dates.append(
+                datetime(int(match.group(1)), int(match.group(2)), int(match.group(3)), tzinfo=UTC)
+            )
     # Written dates: January 15, 2026 / Jan 15 2026
     for match in re.finditer(
         r"\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),?\s+(\d{4})\b",
@@ -55,13 +77,28 @@ def _extract_dates(text: str) -> list[datetime]:
         re.IGNORECASE,
     ):
         month_map = {
-            "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
-            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+            "jan": 1,
+            "feb": 2,
+            "mar": 3,
+            "apr": 4,
+            "may": 5,
+            "jun": 6,
+            "jul": 7,
+            "aug": 8,
+            "sep": 9,
+            "oct": 10,
+            "nov": 11,
+            "dec": 12,
         }
-        try:
-            dates.append(datetime(int(match.group(3)), month_map[match.group(1).lower()], int(match.group(2))))
-        except (ValueError, KeyError):
-            pass
+        with contextlib.suppress(ValueError, KeyError):
+            dates.append(
+                datetime(
+                    int(match.group(3)),
+                    month_map[match.group(1).lower()],
+                    int(match.group(2)),
+                    tzinfo=UTC,
+                )
+            )
     return dates
 
 

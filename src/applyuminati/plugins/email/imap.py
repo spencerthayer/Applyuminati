@@ -11,13 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import email as email_lib
+import email.message
+import email.mime.text
 import email.utils
 import imaplib
 import re
 from typing import Any
 
-from applyuminati.core.clock import utcnow
+from applyuminati.core.clock import ensure_utc, utcnow
 from applyuminati.core.errors import AuthenticationRequiredError, TransientNetworkError
+from applyuminati.core.logging import get_logger
 from applyuminati.core.registry import HealthReport, HealthState
 from applyuminati.core.settings import EmailAccountConfig
 from applyuminati.email.base import (
@@ -32,7 +35,9 @@ from applyuminati.email.base import (
     email_plugin,
 )
 
-__all__ = ["ImapProvider", "PLUGIN"]
+__all__ = ["PLUGIN", "ImapProvider"]
+
+log = get_logger(__name__)
 
 _CAPABILITIES = frozenset(
     {
@@ -53,7 +58,9 @@ def _metadata() -> EmailProviderMetadata:
         capabilities=_CAPABILITIES,
         requires_oauth=False,
         homepage="https://tools.ietf.org/html/rfc3501",
-        notes="Standard IMAP over SSL. Works with Gmail (app password), Outlook, and any IMAP server.",
+        notes=(
+            "Standard IMAP over SSL. Works with Gmail (app password), Outlook, and any IMAP server."
+        ),
         required_config=("host", "port", "username", "password"),
     )
 
@@ -67,7 +74,7 @@ def _decode_payload(payload: Any, charset: str | None = None) -> str:
     return ""
 
 
-def _extract_body(msg: email_lib.Message) -> str:
+def _extract_body(msg: email.message.Message) -> str:
     """Extract the plain-text body from an email.Message, converting HTML if needed."""
     if msg.is_multipart():
         for part in msg.walk():
@@ -140,8 +147,10 @@ class ImapProvider(EmailProvider):
                 detail=f"connected to {self._config.host}:{self._config.port}",
             )
         except AuthenticationRequiredError as exc:
-            return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail=exc.message)
-        except Exception as exc:  # noqa: BLE001
+            return HealthReport(
+                plugin=self._name, state=HealthState.UNAVAILABLE, detail=exc.message
+            )
+        except Exception as exc:
             return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail=str(exc))
 
     async def fetch(self, query: EmailQuery) -> EmailFetchResult:
@@ -149,21 +158,21 @@ class ImapProvider(EmailProvider):
         messages: list[EmailMessage] = []
         try:
             conn = await asyncio.to_thread(self._connect)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failures.append(f"connection failed: {exc}")
             return EmailFetchResult(account=self._name, messages=[], failures=failures)
 
         mailbox = query.mailbox or self._config.mailbox or "INBOX"
         try:
             await asyncio.to_thread(conn.select, mailbox)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             failures.append(f"could not select mailbox {mailbox}: {exc}")
             return EmailFetchResult(account=self._name, messages=[], failures=failures)
 
         search_criteria = self._build_search(query)
         try:
-            status, data = await asyncio.to_thread(conn.search, *search_criteria)
-        except Exception as exc:  # noqa: BLE001
+            status, data = await asyncio.to_thread(conn.search, None, *search_criteria)
+        except Exception as exc:
             failures.append(f"search failed: {exc}")
             return EmailFetchResult(account=self._name, messages=[], failures=failures)
 
@@ -177,31 +186,33 @@ class ImapProvider(EmailProvider):
 
         for msg_id in ids:
             try:
-                status, msg_data = await asyncio.to_thread(
-                    conn.fetch, msg_id, "(RFC822)"
-                )
+                status, msg_data = await asyncio.to_thread(conn.fetch, msg_id, "(RFC822)")
                 if status != "OK" or not msg_data or not msg_data[0]:
                     continue
                 raw = msg_data[0][1]
+                if not isinstance(raw, bytes | bytearray):
+                    continue
                 msg = email_lib.message_from_bytes(raw)
                 messages.append(self._parse_message(msg, msg_id.decode()))
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 failures.append(f"failed to fetch message {msg_id}: {exc}")
 
         return EmailFetchResult(
-            account=self._name, messages=messages, failures=failures,
+            account=self._name,
+            messages=messages,
+            failures=failures,
             truncated=bool(query.max_results and len(ids) >= query.max_results),
         )
 
     async def save_draft(self, draft: EmailDraft) -> str:
-        msg = email_lib.MIMEText(draft.body_text, "plain", "utf-8")
+        msg = email.mime.text.MIMEText(draft.body_text, "plain", "utf-8")
         msg["Subject"] = draft.subject
         msg["From"] = self._config.username or ""
         msg["To"] = ", ".join(addr.address for addr in draft.to)
         conn = await asyncio.to_thread(self._connect)
         try:
             conn.append("Drafts", "\\Draft", None, msg.as_bytes())
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise TransientNetworkError(
                 f"could not save draft: {exc}", code="email.imap_draft_failed"
             ) from exc
@@ -211,27 +222,25 @@ class ImapProvider(EmailProvider):
         if self._connection is not None:
             try:
                 await asyncio.to_thread(self._connection.logout)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:
+                log.debug("imap.logout_failed", exc_info=True)
             self._connection = None
 
-    def _build_search(self, query: EmailQuery) -> tuple[bytes, ...]:
-        criteria: list[bytes] = []
+    def _build_search(self, query: EmailQuery) -> tuple[str, ...]:
+        criteria: list[str] = []
         if query.since is not None:
-            criteria.append(
-                f'SINCE {query.since.strftime("%d-%b-%Y")}'.encode()
-            )
+            criteria.append(f"SINCE {query.since.strftime('%d-%b-%Y')}")
         if query.terms:
             for term in query.terms:
-                criteria.append(f'TEXT "{term}"'.encode())
+                criteria.append(f'TEXT "{term}"')
         if query.from_domains:
             for domain in query.from_domains:
-                criteria.append(f'FROM "{domain}"'.encode())
+                criteria.append(f'FROM "{domain}"')
         if not criteria:
-            criteria.append(b"ALL")
+            criteria.append("ALL")
         return tuple(criteria)
 
-    def _parse_message(self, msg: email_lib.Message, provider_id: str) -> EmailMessage:
+    def _parse_message(self, msg: email.message.Message, provider_id: str) -> EmailMessage:
         sender_list = _parse_addresses(msg.get("From", ""))
         recipients = _parse_addresses(msg.get("To", ""))
         subject = msg.get("Subject", "")
@@ -241,9 +250,9 @@ class ImapProvider(EmailProvider):
             try:
                 parsed = email.utils.parsedate_to_datetime(date_str)
                 if parsed is not None:
-                    received_at = parsed if parsed.tzinfo else parsed.replace(tzinfo=None)
-            except Exception:  # noqa: BLE001
-                pass
+                    received_at = ensure_utc(parsed)
+            except Exception:
+                log.debug("imap.date_parse_failed", date_header=date_str, exc_info=True)
 
         body = _extract_body(msg)
         links = re.findall(r"https?://[^\s<>\"]+", body)
@@ -259,9 +268,10 @@ class ImapProvider(EmailProvider):
             received_at=received_at,
             body_text=body,
             snippet=body[:200] if body else None,
-            has_attachments=bool(msg.is_multipart() and any(
-                part.get_content_disposition() == "attachment" for part in msg.walk()
-            )),
+            has_attachments=bool(
+                msg.is_multipart()
+                and any(part.get_content_disposition() == "attachment" for part in msg.walk())
+            ),
             links=links,
         )
 
@@ -275,7 +285,9 @@ PLUGIN = email_plugin(
     name="IMAP",
     factory=_factory,
     capabilities=_CAPABILITIES,
-    description="Standard IMAP over SSL. Works with Gmail (app password), Outlook, and any IMAP server.",
+    description=(
+        "Standard IMAP over SSL. Works with Gmail (app password), Outlook, and any IMAP server."
+    ),
     requires_auth=True,
     priority=10,
 )

@@ -9,19 +9,18 @@ authoritative and :meth:`replay` can repair the cache.
 
 from __future__ import annotations
 
+from applyuminati.core.clock import utcnow
 from applyuminati.core.errors import ApplyuminatiError, FailureCategory
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.models.application import (
     SUBMITTED_STATES,
+    ActorKind,
     Application,
     ApplicationEvent,
     ApplicationState,
-    ActorKind,
-    TRANSITIONS,
     allowed_transitions,
     can_transition,
 )
-from applyuminati.core.clock import utcnow
 
 __all__ = ["ApplicationMachine"]
 
@@ -107,6 +106,8 @@ class ApplicationMachine:
         lines: list[str] = []
         for event in application.events:
             actor = event.actor_detail or event.actor.value
-            arrow = f"{event.from_state.value} -> {event.to_state.value}" if event.from_state else f"-> {event.to_state.value}"
+            from_label = event.from_state.value if event.from_state else "(none)"
+            to_label = event.to_state.value if event.to_state else "(none)"
+            arrow = f"{from_label} -> {to_label}" if event.from_state else f"-> {to_label}"
             lines.append(f"[{event.occurred_at.isoformat()}] {actor}: {arrow} ({event.reason})")
         return lines

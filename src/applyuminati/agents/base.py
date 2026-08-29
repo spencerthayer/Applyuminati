@@ -153,7 +153,7 @@ class AgentBackend(Protocol):
         """Run ``task`` to completion. Never raises for runtime failure."""
         ...
 
-    async def stream(self, task: AgentTask) -> AsyncIterator[AgentEvent]:
+    def stream(self, task: AgentTask) -> AsyncIterator[AgentEvent]:
         """Run ``task``, yielding events. Backends without streaming yield
         ``STARTED`` then ``FINISHED``/``FAILED``."""
         ...
@@ -171,7 +171,7 @@ def agent_plugin(
     *,
     slug: str,
     name: str,
-    factory: Any,  # noqa: ANN401
+    factory: Any,
     capabilities: frozenset[AgentCapability],
     description: str = "",
     priority: int = 0,

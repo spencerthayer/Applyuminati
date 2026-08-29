@@ -32,17 +32,19 @@ from applyuminati.sources.base import SOURCE_REGISTRY
 log = get_logger(__name__)
 
 
-async def _probe(name: str, factory: Any) -> HealthReport:  # noqa: ANN401 - varied plugin ctors
+async def _probe(name: str, factory: Any) -> HealthReport:
     """Instantiate and probe one backend, converting any failure to a report."""
     try:
         backend = factory()
         return await backend.health()
-    except Exception as exc:  # noqa: BLE001 - a probe must never raise
+    except Exception as exc:
         return HealthReport(plugin=name, state=HealthState.UNAVAILABLE, detail=str(exc))
 
 
 class HealthService:
-    def __init__(self, repos: Repositories, settings: Settings, llm: LLMClient | None = None) -> None:
+    def __init__(
+        self, repos: Repositories, settings: Settings, llm: LLMClient | None = None
+    ) -> None:
         self._repos = repos
         self._settings = settings
         self._llm = llm
@@ -83,7 +85,13 @@ class HealthService:
 
     def _load_errors(self) -> list[str]:
         errors: list[str] = []
-        for registry in (SOURCE_REGISTRY, LLM_REGISTRY, BROWSER_REGISTRY, AGENT_REGISTRY, EMAIL_REGISTRY):
+        for registry in (
+            SOURCE_REGISTRY,
+            LLM_REGISTRY,
+            BROWSER_REGISTRY,
+            AGENT_REGISTRY,
+            EMAIL_REGISTRY,
+        ):
             errors.extend(
                 f"{err.kind}:{err.slug} from {err.origin}: {err.message}"
                 for err in registry.load_errors
@@ -103,7 +111,7 @@ class HealthService:
             return []
         try:
             return await self._llm.health()
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("health.llm_probe_failed", error=str(exc))
             return [HealthReport(plugin="llm", state=HealthState.UNAVAILABLE, detail=str(exc))]
 
@@ -142,7 +150,9 @@ class HealthService:
                 )
                 continue
             reports.append(
-                await _probe(name, lambda d=descriptor, a=account: d.create(account=a, name=name))
+                await _probe(
+                    name, lambda d=descriptor, a=account, n=name: d.create(account=a, name=n)
+                )
             )
         return reports
 

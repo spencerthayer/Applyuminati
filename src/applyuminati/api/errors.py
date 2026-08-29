@@ -12,7 +12,9 @@ from applyuminati.core.logging import get_logger
 log = get_logger(__name__)
 
 
-async def applyuminati_error_handler(request: Request, exc: ApplyuminatiError) -> JSONResponse:
+async def applyuminati_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    if not isinstance(exc, ApplyuminatiError):
+        raise exc
     payload = ErrorResponse(**exc.to_dict())
     log.warning(
         "api.error",

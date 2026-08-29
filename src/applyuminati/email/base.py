@@ -201,7 +201,7 @@ def email_plugin(
     *,
     slug: str,
     name: str,
-    factory: Any,  # noqa: ANN401
+    factory: Any,
     capabilities: frozenset[EmailCapability],
     description: str = "",
     requires_auth: bool = True,

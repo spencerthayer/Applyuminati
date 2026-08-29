@@ -25,19 +25,24 @@ from applyuminati.llm.base import (
     CompletionResponse,
     LLMCapability,
     LLMProvider,
-    Message,
+    ModelT,
     ProviderMetadata,
-    Role,
     TokenUsage,
     llm_plugin,
 )
+from applyuminati.llm.structured import request_structured
 
-__all__ = ["OpenAICompatibleProvider", "PLUGIN"]
+__all__ = ["PLUGIN", "OpenAICompatibleProvider"]
 
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
 _DEFAULT_URL = "https://api.openai.com/v1"
 _CAPABILITIES = frozenset(
-    {LLMCapability.CHAT, LLMCapability.STRUCTURED_OUTPUT, LLMCapability.JSON_MODE, LLMCapability.STREAMING}
+    {
+        LLMCapability.CHAT,
+        LLMCapability.STRUCTURED_OUTPUT,
+        LLMCapability.JSON_MODE,
+        LLMCapability.STREAMING,
+    }
 )
 
 
@@ -78,27 +83,43 @@ class OpenAICompatibleProvider(LLMProvider):
             remote=not self._local,
         )
 
-    async def health(self) -> HealthReport:
+    async def health(self) -> HealthReport:  # noqa: PLR0911 -- distinct health-probe outcomes
         if self._local:
             # Ollara and local servers may not need an API key.
             try:
                 resp = await self._client.get("/models")
                 if resp.status_code < 400:
-                    return HealthReport(plugin=self._name, state=HealthState.HEALTHY, detail="reachable")
+                    return HealthReport(
+                        plugin=self._name, state=HealthState.HEALTHY, detail="reachable"
+                    )
                 if resp.status_code in (401, 403):
-                    return HealthReport(plugin=self._name, state=HealthState.HEALTHY, detail="reachable (auth needed for some ops)")
-            except Exception as exc:  # noqa: BLE001
-                return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail=str(exc))
+                    return HealthReport(
+                        plugin=self._name,
+                        state=HealthState.HEALTHY,
+                        detail="reachable (auth needed for some ops)",
+                    )
+            except Exception as exc:
+                return HealthReport(
+                    plugin=self._name, state=HealthState.UNAVAILABLE, detail=str(exc)
+                )
         else:
             if not self._config.api_key:
-                return HealthReport(plugin=self._name, state=HealthState.DEGRADED, detail="no API key configured")
+                return HealthReport(
+                    plugin=self._name, state=HealthState.DEGRADED, detail="no API key configured"
+                )
             try:
                 resp = await self._client.get("/models")
                 if resp.status_code < 400:
-                    return HealthReport(plugin=self._name, state=HealthState.HEALTHY, detail="reachable")
-            except Exception as exc:  # noqa: BLE001
-                return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail=str(exc))
-        return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail="health check failed")
+                    return HealthReport(
+                        plugin=self._name, state=HealthState.HEALTHY, detail="reachable"
+                    )
+            except Exception as exc:
+                return HealthReport(
+                    plugin=self._name, state=HealthState.UNAVAILABLE, detail=str(exc)
+                )
+        return HealthReport(
+            plugin=self._name, state=HealthState.UNAVAILABLE, detail="health check failed"
+        )
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = request.model or self._config.default_model or "gpt-4o-mini"
@@ -112,7 +133,11 @@ class OpenAICompatibleProvider(LLMProvider):
         if request.response_schema:
             body["response_format"] = {
                 "type": "json_schema",
-                "json_schema": {"name": "response", "schema": request.response_schema, "strict": True},
+                "json_schema": {
+                    "name": "response",
+                    "schema": request.response_schema,
+                    "strict": True,
+                },
             }
         elif self.metadata.supports(LLMCapability.JSON_MODE):
             body["response_format"] = {"type": "json_object"}
@@ -123,7 +148,9 @@ class OpenAICompatibleProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise TransientNetworkError(f"request timed out: {exc}", code="llm.timeout") from exc
         except httpx.ConnectError as exc:
-            raise TransientNetworkError(f"connection failed: {exc}", code="llm.connect_error") from exc
+            raise TransientNetworkError(
+                f"connection failed: {exc}", code="llm.connect_error"
+            ) from exc
 
         self._translate_error(resp)
         data = resp.json()
@@ -150,6 +177,11 @@ class OpenAICompatibleProvider(LLMProvider):
             prompt_id=request.prompt_id,
             prompt_version=request.prompt_version,
         )
+
+    async def complete_structured(
+        self, request: CompletionRequest, schema: type[ModelT]
+    ) -> tuple[ModelT, CompletionResponse]:
+        return await request_structured(self, request, schema)
 
     async def stream(self, request: CompletionRequest) -> Any:  # type: ignore[override]
         # Streaming is implemented but simplified: yield the full response.
@@ -193,6 +225,8 @@ PLUGIN = llm_plugin(
     name="OpenAI-compatible",
     factory=_factory,
     capabilities=_CAPABILITIES,
-    description="Covers OpenAI, OpenRouter, Ollama, LM Studio, vLLM and any OpenAI-compatible endpoint.",
+    description=(
+        "Covers OpenAI, OpenRouter, Ollama, LM Studio, vLLM and any OpenAI-compatible endpoint."
+    ),
     priority=10,
 )

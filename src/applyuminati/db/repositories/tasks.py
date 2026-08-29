@@ -11,8 +11,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import timedelta
+from typing import cast
 
-from sqlalchemy import select, update
+from sqlalchemy import CursorResult, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from applyuminati.core.clock import utcnow
@@ -52,9 +53,8 @@ class TaskRepository:
         update lands first wins and the others see ``rowcount == 0``.
         """
         now = utcnow()
-        statement = (
-            select(TaskRow.id)
-            .where(TaskRow.state == TaskState.PENDING.value, TaskRow.scheduled_for <= now)
+        statement = select(TaskRow.id).where(
+            TaskRow.state == TaskState.PENDING.value, TaskRow.scheduled_for <= now
         )
         if kinds:
             statement = statement.where(TaskRow.kind.in_(list(kinds)))
@@ -63,14 +63,17 @@ class TaskRepository:
         if task_id is None:
             return None
 
-        result = await self._session.execute(
-            update(TaskRow)
-            .where(TaskRow.id == task_id, TaskRow.state == TaskState.PENDING.value)
-            .values(
-                state=TaskState.RUNNING.value,
-                started_at=now,
-                lease_expires_at=now + timedelta(seconds=lease_seconds),
-            )
+        result = cast(
+            CursorResult,
+            await self._session.execute(
+                update(TaskRow)
+                .where(TaskRow.id == task_id, TaskRow.state == TaskState.PENDING.value)
+                .values(
+                    state=TaskState.RUNNING.value,
+                    started_at=now,
+                    lease_expires_at=now + timedelta(seconds=lease_seconds),
+                )
+            ),
         )
         if result.rowcount != 1:  # pragma: no cover - loses only under contention
             return None

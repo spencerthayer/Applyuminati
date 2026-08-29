@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from applyuminati.core.errors import FailureCategory
 from applyuminati.core.models.common import EmploymentType, Location, RemoteMode
 from applyuminati.core.models.job import AtsVendor, Job, SourceTier, VerificationState
 from applyuminati.core.registry import HealthReport, HealthState
@@ -94,7 +95,7 @@ class LocalFeedSource(JobSource):
                 failures.append(
                     SourceFailure(
                         source="local_feed",
-                        category="endpoint_unavailable",
+                        category=FailureCategory.ENDPOINT_UNAVAILABLE,
                         message=f"could not read {path}: {exc}",
                         stage="list",
                     )
@@ -150,7 +151,9 @@ class LocalFeedSource(JobSource):
             description=raw.get("description"),
             locations=locations,
             remote_mode=RemoteMode(raw["remote_mode"]) if raw.get("remote_mode") else None,
-            employment_type=EmploymentType(raw["employment_type"]) if raw.get("employment_type") else None,
+            employment_type=EmploymentType(raw["employment_type"])
+            if raw.get("employment_type")
+            else None,
             posted_at=raw.get("posted_at"),
             apply_url=raw.get("apply_url"),
             ats=AtsVendor(raw.get("ats", "unknown")),

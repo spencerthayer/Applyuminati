@@ -19,17 +19,24 @@ from applyuminati.llm.base import (
     CompletionResponse,
     LLMCapability,
     LLMProvider,
+    ModelT,
     ProviderMetadata,
     Role,
     TokenUsage,
     llm_plugin,
 )
+from applyuminati.llm.structured import request_structured
 
-__all__ = ["GeminiProvider", "PLUGIN"]
+__all__ = ["PLUGIN", "GeminiProvider"]
 
 _DEFAULT_URL = "https://generativelanguage.googleapis.com/v1beta"
 _CAPABILITIES = frozenset(
-    {LLMCapability.CHAT, LLMCapability.STRUCTURED_OUTPUT, LLMCapability.STREAMING, LLMCapability.VISION}
+    {
+        LLMCapability.CHAT,
+        LLMCapability.STRUCTURED_OUTPUT,
+        LLMCapability.STREAMING,
+        LLMCapability.VISION,
+    }
 )
 
 
@@ -48,7 +55,10 @@ class GeminiProvider(LLMProvider):
     @property
     def metadata(self) -> ProviderMetadata:
         return ProviderMetadata(
-            slug=self._name, name=self._name, capabilities=_CAPABILITIES, remote=True,
+            slug=self._name,
+            name=self._name,
+            capabilities=_CAPABILITIES,
+            remote=True,
             homepage="https://ai.google.dev",
         )
 
@@ -58,19 +68,29 @@ class GeminiProvider(LLMProvider):
         try:
             resp = await self._client.get("/models", params={"key": self._api_key})
             if resp.status_code < 400:
-                return HealthReport(plugin=self._name, state=HealthState.HEALTHY, detail="reachable")
-        except Exception as exc:  # noqa: BLE001
+                return HealthReport(
+                    plugin=self._name, state=HealthState.HEALTHY, detail="reachable"
+                )
+        except Exception as exc:
             return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail=str(exc))
-        return HealthReport(plugin=self._name, state=HealthState.UNAVAILABLE, detail="health check failed")
+        return HealthReport(
+            plugin=self._name, state=HealthState.UNAVAILABLE, detail="health check failed"
+        )
 
     async def complete(self, request: CompletionRequest) -> CompletionResponse:
         model = request.model or self._config.default_model or "gemini-1.5-flash"
         system = request.system_prompt
         contents = [
-            {"role": "user" if m.role is not Role.ASSISTANT else "model", "parts": [{"text": m.content}]}
+            {
+                "role": "user" if m.role is not Role.ASSISTANT else "model",
+                "parts": [{"text": m.content}],
+            }
             for m in request.conversation
         ]
-        body: dict[str, Any] = {"contents": contents, "generationConfig": {"temperature": request.temperature}}
+        body: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"temperature": request.temperature},
+        }
         if system:
             body["systemInstruction"] = {"parts": [{"text": system}]}
         if request.max_output_tokens:
@@ -89,7 +109,9 @@ class GeminiProvider(LLMProvider):
         except httpx.TimeoutException as exc:
             raise TransientNetworkError(f"timeout: {exc}", code="llm.timeout") from exc
         except httpx.ConnectError as exc:
-            raise TransientNetworkError(f"connection failed: {exc}", code="llm.connect_error") from exc
+            raise TransientNetworkError(
+                f"connection failed: {exc}", code="llm.connect_error"
+            ) from exc
 
         self._translate_error(resp)
         data = resp.json()
@@ -110,10 +132,17 @@ class GeminiProvider(LLMProvider):
             usage=usage,
             latency_ms=latency_ms,
             estimated_cost_usd=usage.estimated_cost_usd(self._config),
-            finish_reason=data.get("candidates", [{}])[0].get("finishReason") if data.get("candidates") else None,
+            finish_reason=data.get("candidates", [{}])[0].get("finishReason")
+            if data.get("candidates")
+            else None,
             prompt_id=request.prompt_id,
             prompt_version=request.prompt_version,
         )
+
+    async def complete_structured(
+        self, request: CompletionRequest, schema: type[ModelT]
+    ) -> tuple[ModelT, CompletionResponse]:
+        return await request_structured(self, request, schema)
 
     async def stream(self, request: CompletionRequest) -> Any:  # type: ignore[override]
         response = await self.complete(request)
@@ -128,11 +157,17 @@ class GeminiProvider(LLMProvider):
         if resp.status_code == 429:
             retry_after = resp.headers.get("Retry-After")
             seconds = float(retry_after) if retry_after else None
-            raise RateLimitedError("rate limited", code="llm.rate_limited", retry_after_seconds=seconds)
+            raise RateLimitedError(
+                "rate limited", code="llm.rate_limited", retry_after_seconds=seconds
+            )
         if resp.status_code in (401, 403):
-            raise AuthenticationRequiredError(f"auth failed (HTTP {resp.status_code})", code="llm.auth_required")
+            raise AuthenticationRequiredError(
+                f"auth failed (HTTP {resp.status_code})", code="llm.auth_required"
+            )
         if resp.status_code >= 500:
-            raise TransientNetworkError(f"server error (HTTP {resp.status_code})", code="llm.server_error")
+            raise TransientNetworkError(
+                f"server error (HTTP {resp.status_code})", code="llm.server_error"
+            )
 
 
 def _factory(settings: Settings, name: str, config: ProviderConfig) -> GeminiProvider:

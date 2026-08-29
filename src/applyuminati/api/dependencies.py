@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from applyuminati.core.settings import Settings
 from applyuminati.services.container import Repositories, ServiceContainer, get_container
 
-__all__ = ["get_repositories", "get_settings", "get_container_dep"]
+__all__ = ["get_container_dep", "get_repositories", "get_settings"]
 
 
 async def get_container_dep() -> AsyncIterator[ServiceContainer]:

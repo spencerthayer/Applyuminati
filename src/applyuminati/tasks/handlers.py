@@ -80,6 +80,8 @@ class TaskHandler(Generic[PayloadT]):
     #: Ordered, cheapest-and-most-reliable first. The recovery policy walks
     #: this list on drift, never repeating an entry.
     strategies: tuple[str, ...] = ()
+    #: Wall-clock budget for one attempt before the worker cancels it as timed out.
+    timeout_seconds: float = 600.0
 
     def __post_init__(self) -> None:
         if len(set(self.strategies)) != len(self.strategies):
@@ -96,6 +98,7 @@ def register_handler(
     input_schema: type[PayloadT],
     *,
     strategies: Sequence[str] = (),
+    timeout_seconds: float = 600.0,
     registry: dict[str, TaskHandler[Any]] | None = None,
 ) -> Callable[[HandlerFn[PayloadT]], HandlerFn[PayloadT]]:
     """Register a task handler and return the function unchanged.
@@ -118,6 +121,7 @@ def register_handler(
             input_schema=input_schema,
             run=fn,
             strategies=tuple(strategies),
+            timeout_seconds=timeout_seconds,
         )
         return fn
 

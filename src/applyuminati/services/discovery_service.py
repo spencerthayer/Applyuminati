@@ -130,7 +130,7 @@ class DiscoveryService:
                         source=slug,
                         failures=[SourceFailure.from_error(slug, exc, stage="discover")],
                     )
-                except Exception as exc:  # noqa: BLE001 - isolate one bad plugin
+                except Exception as exc:
                     log.exception("discovery.source_crashed", source=slug)
                     result = SourceResult(
                         source=slug,

@@ -6,6 +6,7 @@ Re-exports the contract types. Concrete backends live in
 
 from applyuminati.browser.base import (
     BROWSER_REGISTRY,
+    HANDOFF_CONDITIONS,
     ActionResult,
     BrowserBackend,
     BrowserCapability,
@@ -14,7 +15,6 @@ from applyuminati.browser.base import (
     BrowserSession,
     ControlOwner,
     ElementRole,
-    HANDOFF_CONDITIONS,
     PageCondition,
     PageElement,
     PageObservation,

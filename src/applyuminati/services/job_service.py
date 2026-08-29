@@ -12,6 +12,7 @@ from collections.abc import Sequence
 
 from applyuminati.core.errors import NotFoundError
 from applyuminati.core.models.application import ApplicationState, allowed_transitions
+from applyuminati.core.models.common import RemoteMode
 from applyuminati.core.models.job import Job, VerificationState
 from applyuminati.core.models.scoring import Recommendation
 from applyuminati.services.container import Repositories

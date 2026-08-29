@@ -9,6 +9,7 @@ local data.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -131,7 +132,8 @@ class ProfileService:
 
     async def import_from_path(self, path: Path, *, replace: bool = False) -> ImportResult:
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            raw_text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+            payload = json.loads(raw_text)
         except (OSError, json.JSONDecodeError) as exc:
             raise ConfigurationError(
                 f"could not read JSON Resume from {path}: {exc}",

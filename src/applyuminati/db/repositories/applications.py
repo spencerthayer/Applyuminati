@@ -52,9 +52,9 @@ class ApplicationRepository:
         statement = select(ApplicationRow)
         if states:
             statement = statement.where(ApplicationRow.state.in_(states))
-        total = await self._session.scalar(
-            select(func.count()).select_from(statement.subquery())
-        ) or 0
+        total = (
+            await self._session.scalar(select(func.count()).select_from(statement.subquery())) or 0
+        )
         statement = statement.order_by(ApplicationRow.updated_at.desc()).limit(limit).offset(offset)
         rows = (await self._session.scalars(statement)).all()
         return [self._hydrate(row) for row in rows], int(total)

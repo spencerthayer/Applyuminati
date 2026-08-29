@@ -7,9 +7,9 @@ compose file work without CORS or a second container.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +25,8 @@ from applyuminati.api.routers.profile import router as profile_router
 from applyuminati.api.routers.settings import dashboard_router, settings_router
 from applyuminati.api.routers.sources import router as sources_router
 from applyuminati.core.errors import ApplyuminatiError
-from applyuminati.core.logging import configure_logging, get_logger
+from applyuminati.core.logging import get_logger
+from applyuminati.core.settings import Settings
 from applyuminati.services.container import ServiceContainer, get_container, set_container
 
 log = get_logger(__name__)
@@ -40,7 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await container.aclose()
 
 
-def create_app(settings=None) -> FastAPI:
+def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the FastAPI app. Called by uvicorn in the entrypoint."""
     container = ServiceContainer(settings) if settings else get_container()
     if settings is not None:

@@ -13,6 +13,7 @@ The store wraps :class:`MemoryRepository` and adds the policy layer:
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from applyuminati.core.clock import utcnow
@@ -60,11 +61,10 @@ class MemoryStore:
             existing.data = data or existing.data
             existing.updated_at = utcnow()
             if ttl_seconds is not None:
-                from datetime import timedelta
-
                 existing.expires_at = utcnow() + timedelta(seconds=ttl_seconds)
             return await self._repo.upsert(existing)
 
+        expires_at = utcnow() + timedelta(seconds=ttl_seconds) if ttl_seconds is not None else None
         record = MemoryRecord(
             id=new_ulid(),
             kind=kind,
@@ -74,7 +74,7 @@ class MemoryStore:
             data=data or {},
             level=level,
             provenance=provenance or [],
-            ttl_seconds=ttl_seconds,
+            expires_at=expires_at,
         )
         return await self._repo.upsert(record)
 
@@ -117,9 +117,7 @@ class MemoryStore:
         filtered.sort(key=lambda r: (r.confidence, r.updated_at), reverse=True)
         return filtered[:limit]
 
-    async def supersede(
-        self, record_id: str, replacement: MemoryRecord
-    ) -> MemoryRecord:
+    async def supersede(self, record_id: str, replacement: MemoryRecord) -> MemoryRecord:
         """Mark ``record_id`` as superseded by ``replacement``.
 
         Nothing is hard-deleted: the old record stays with
@@ -128,7 +126,9 @@ class MemoryStore:
         replacement = await self._repo.upsert(replacement)
         # We need to mark the old record. Since we don't have a direct
         # "get by id" on the repo, search for it.
-        records = await self._repo.search(kind=replacement.kind, scope=replacement.scope, active_only=False, limit=200)
+        records = await self._repo.search(
+            kind=replacement.kind, scope=replacement.scope, active_only=False, limit=200
+        )
         for record in records:
             if record.id == record_id and record.superseded_by is None:
                 record.superseded_by = replacement.id

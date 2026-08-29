@@ -52,14 +52,14 @@ class UTCDateTime(TypeDecorator[datetime]):
     impl = DateTime(timezone=True)
     cache_ok = True
 
-    def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:  # noqa: ANN401
+    def process_bind_param(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:
             return None
         if value.tzinfo is None:
             return value.replace(tzinfo=UTC)
         return value.astimezone(UTC)
 
-    def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:  # noqa: ANN401
+    def process_result_value(self, value: datetime | None, dialect: Any) -> datetime | None:
         if value is None:
             return None
         if value.tzinfo is None:
@@ -78,4 +78,4 @@ class Base(DeclarativeBase):
     }
 
 
-__all__ = ["JSONText", "NAMING_CONVENTION", "ULID", "Base", "UTCDateTime"]
+__all__ = ["NAMING_CONVENTION", "ULID", "Base", "JSONText", "UTCDateTime"]

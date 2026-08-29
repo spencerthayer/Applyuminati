@@ -9,7 +9,6 @@ cannot loop — it goes terminal.
 
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any
 
 from applyuminati.core.clock import utcnow
@@ -17,7 +16,7 @@ from applyuminati.core.errors import ApplyuminatiError
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.models.task import TaskAttempt, TaskRecord, TaskState
 from applyuminati.db.repositories.tasks import TaskRepository
-from applyuminati.tasks.recovery import RecoveryDecision, decide
+from applyuminati.tasks.recovery import decide
 
 __all__ = ["TaskQueue"]
 
@@ -49,8 +48,16 @@ class TaskQueue:
         )
         return await self._repo.enqueue(task)
 
-    async def claim(self, *, kinds: list[str] | None = None, lease_seconds: int = 300) -> TaskRecord | None:
+    async def claim(
+        self, *, kinds: list[str] | None = None, lease_seconds: int = 300
+    ) -> TaskRecord | None:
         return await self._repo.claim_next(kinds=kinds, lease_seconds=lease_seconds)
+
+    async def checkpoint(self, task: TaskRecord, resume_state: dict[str, Any]) -> TaskRecord:
+        """Persist partial progress immediately, without changing task state."""
+        task.resume_state = resume_state
+        task.updated_at = utcnow()
+        return await self._repo.save(task)
 
     async def complete(self, task: TaskRecord, result: dict[str, Any]) -> TaskRecord:
         task.state = TaskState.SUCCEEDED

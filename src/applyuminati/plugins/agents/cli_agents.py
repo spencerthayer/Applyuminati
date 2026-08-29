@@ -16,9 +16,8 @@ import asyncio
 import json
 import re
 import shutil
-import sys
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from applyuminati.agents.base import (
@@ -33,7 +32,7 @@ from applyuminati.agents.base import (
 )
 from applyuminati.core.clock import utcnow
 from applyuminati.core.errors import FailureCategory
-from applyuminati.core.registry import HealthReport, HealthState
+from applyuminati.core.registry import HealthReport, HealthState, PluginDescriptor
 from applyuminati.core.settings import Settings
 
 __all__ = [
@@ -142,7 +141,11 @@ class CliAgentBackend(AgentBackend):
 
     @property
     def metadata(self) -> AgentMetadata:
-        platforms = frozenset({"darwin", "linux"}) if self._spec.slug == "oh_my_pi" else frozenset({"darwin", "linux", "win32"})
+        platforms = (
+            frozenset({"darwin", "linux"})
+            if self._spec.slug == "oh_my_pi"
+            else frozenset({"darwin", "linux", "win32"})
+        )
         return AgentMetadata(
             slug=self._spec.slug,
             name=self._spec.name,
@@ -162,7 +165,8 @@ class CliAgentBackend(AgentBackend):
             )
         try:
             proc = await asyncio.create_subprocess_exec(
-                self._executable, "--version",
+                self._executable,
+                "--version",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -175,7 +179,7 @@ class CliAgentBackend(AgentBackend):
                     detail=f"found at {path}",
                     facts={"version": version, "path": path},
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 proc.kill()
                 await proc.wait()
                 return HealthReport(
@@ -184,7 +188,7 @@ class CliAgentBackend(AgentBackend):
                     detail=f"found at {path} (version probe timed out)",
                     facts={"path": path},
                 )
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             return HealthReport(
                 plugin=self._spec.slug,
                 state=HealthState.UNAVAILABLE,
@@ -195,6 +199,7 @@ class CliAgentBackend(AgentBackend):
         argv = [self._executable]
         argv.extend(self._build_argv(task))
         start = utcnow()
+        proc: asyncio.subprocess.Process | None = None
         try:
             if self._spec.stdin_prompt:
                 proc = await asyncio.create_subprocess_exec(
@@ -217,9 +222,10 @@ class CliAgentBackend(AgentBackend):
                     proc.communicate(),
                     timeout=task.timeout_seconds,
                 )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+        except TimeoutError:
+            if proc is not None:
+                proc.kill()
+                await proc.wait()
             return AgentResult(
                 task_id=task.id,
                 backend=self._spec.slug,
@@ -259,7 +265,7 @@ class CliAgentBackend(AgentBackend):
             model=task.model,
         )
 
-    async def stream(self, task: AgentTask):  # type: ignore[override]
+    async def stream(self, task: AgentTask) -> AsyncIterator[AgentEvent]:
         yield AgentEvent(kind=AgentEventKind.STARTED)
         result = await self.execute(task)
         if result.succeeded:
@@ -294,7 +300,7 @@ class CliAgentBackend(AgentBackend):
         return None
 
 
-def _make_plugin(spec: CliAgentSpec):
+def _make_plugin(spec: CliAgentSpec) -> PluginDescriptor[AgentBackend]:
     def factory(settings: Settings) -> CliAgentBackend:
         return CliAgentBackend(settings, spec)
 

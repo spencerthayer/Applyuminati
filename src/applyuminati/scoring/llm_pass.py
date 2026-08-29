@@ -12,7 +12,9 @@ uncertainty line: the run never fails because an enrichment was unavailable.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any, Protocol
+
+from pydantic import BaseModel, Field
 
 from applyuminati.core.errors import ApplyuminatiError
 from applyuminati.core.logging import get_logger
@@ -28,8 +30,21 @@ from applyuminati.core.models.scoring import (
 )
 from applyuminati.scoring.engine import SCORER_VERSION, _confidence, _explain, _weighted_overall
 
-if TYPE_CHECKING:
-    from applyuminati.llm.client import LLMClient
+
+class _StructuredCompletionClient(Protocol):
+    """The one `LLMClient` capability this module needs.
+
+    Declared locally, rather than importing `applyuminati.llm.client.LLMClient`,
+    because `scoring` and `llm` are independent siblings in the layered
+    architecture: scoring must stay usable (deterministically) with no LLM
+    dependency at all, and this Protocol is satisfied structurally by the
+    real client without either module importing the other.
+    """
+
+    async def structured(
+        self, prompt_id: str, *, schema: type[BaseModel], **kwargs: Any
+    ) -> tuple[Any, Any]: ...
+
 
 log = get_logger(__name__)
 
@@ -38,6 +53,31 @@ log = get_logger(__name__)
 MAX_ADJUSTMENT = 0.2
 ENRICH_VERSION = "score.enrich/2026-01"
 _PROMPT_ID = "score.enrich"
+
+
+# -- local schema --------------------------------------------------------
+# Defined here (not imported from llm.prompts.scoring) so this module does
+# not depend on the llm package. The prompt task registers a schema with the
+# same field names under prompt id "score.enrich".
+
+
+class _DimensionAdjustment(BaseModel):
+    dimension: str
+    delta: float
+    rationale: str = ""
+
+
+class _MissingRequirementSuggestion(BaseModel):
+    requirement: str
+    severity: str = "significant"
+    note: str | None = None
+
+
+class _EnrichmentSchema(BaseModel):
+    adjustments: list[_DimensionAdjustment] = Field(default_factory=list)
+    missing_requirements: list[_MissingRequirementSuggestion] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    explanation: str = ""
 
 
 class ScoreEnrichmentResult:  # pragma: no cover - placeholder for the schema the LLM task owns
@@ -54,20 +94,19 @@ def _clamp_delta(delta: float) -> float:
 
 
 def _apply_adjustments(
-    score: FitScore, adjustments: list[dict[str, object]]
+    score: FitScore, adjustments: list[_DimensionAdjustment]
 ) -> list[DimensionScore]:
     by_name = {dimension.dimension: dimension for dimension in score.dimensions}
     for adjustment in adjustments:
-        name = str(adjustment.get("dimension", ""))
         try:
-            dimension_enum = ScoreDimension(name)
+            dimension_enum = ScoreDimension(adjustment.dimension)
         except ValueError:
-            log.warning("score.unknown_dimension_adjustment", dimension=name)
+            log.warning("score.unknown_dimension_adjustment", dimension=adjustment.dimension)
             continue
         dimension = by_name.get(dimension_enum)
         if dimension is None:
             continue
-        delta = _clamp_delta(float(adjustment.get("delta", 0.0)))
+        delta = _clamp_delta(adjustment.delta)
         adjusted_score = max(0.0, min(1.0, dimension.score + delta))
         by_name[dimension_enum] = dimension.model_copy(
             update={"score": adjusted_score, "llm_adjusted": True}
@@ -76,24 +115,23 @@ def _apply_adjustments(
 
 
 def _merge_missing(
-    existing: list[MissingRequirement], additions: list[dict[str, object]]
+    existing: list[MissingRequirement], additions: list[_MissingRequirementSuggestion]
 ) -> list[MissingRequirement]:
     present = {item.requirement.lower() for item in existing}
     merged = list(existing)
     for addition in additions:
-        requirement = str(addition.get("requirement", "")).strip()
+        requirement = addition.requirement.strip()
         if not requirement or requirement.lower() in present:
             continue
-        severity_raw = str(addition.get("severity", "significant")).lower()
         try:
-            severity = BlockerSeverity(severity_raw)
+            severity = BlockerSeverity(addition.severity.lower())
         except ValueError:
             severity = BlockerSeverity.SIGNIFICANT
         merged.append(
             MissingRequirement(
                 requirement=requirement,
                 severity=severity,
-                note=addition.get("note"),
+                note=addition.note,
                 partially_evidenced=False,
             )
         )
@@ -132,7 +170,7 @@ def _recompute(score: FitScore, dimensions: list[DimensionScore]) -> FitScore:
 
 
 async def enrich_score(
-    score: FitScore, job: Job, profile: CareerProfile, client: LLMClient
+    score: FitScore, job: Job, profile: CareerProfile, client: _StructuredCompletionClient
 ) -> FitScore:
     """Run the optional LLM pass and return an enriched (or unchanged) score."""
     try:
@@ -152,10 +190,13 @@ async def enrich_score(
         log.warning("score.enrich_failed", job_id=job.id, error=exc.code)
         return score.model_copy(
             update={
-                "uncertainties": [*score.uncertainties, f"LLM enrichment unavailable: {exc.message}"],
+                "uncertainties": [
+                    *score.uncertainties,
+                    f"LLM enrichment unavailable: {exc.message}",
+                ],
             }
         )
-    except Exception as exc:  # noqa: BLE001 - degrade on any unexpected failure
+    except Exception as exc:
         log.warning("score.enrich_unexpected_error", job_id=job.id, error=str(exc))
         return score.model_copy(
             update={
@@ -182,30 +223,3 @@ def _summarise(profile: CareerProfile) -> str:
     titles = ", ".join(profile.targets.titles[:3]) or "(unspecified)"
     skills = ", ".join(sorted(profile.skill_names())[:15]) or "(unspecified)"
     return f"Target titles: {titles}. Skills: {skills}."
-
-
-# -- local schema --------------------------------------------------------
-# Defined here (not imported from llm.prompts.scoring) so this module does
-# not depend on the llm package. The prompt task registers a schema with the
-# same field names under prompt id "score.enrich".
-
-from pydantic import BaseModel, Field  # noqa: E402
-
-
-class _DimensionAdjustment(BaseModel):
-    dimension: str
-    delta: float
-    rationale: str = ""
-
-
-class _MissingRequirementSuggestion(BaseModel):
-    requirement: str
-    severity: str = "significant"
-    note: str | None = None
-
-
-class _EnrichmentSchema(BaseModel):
-    adjustments: list[_DimensionAdjustment] = Field(default_factory=list)
-    missing_requirements: list[_MissingRequirementSuggestion] = Field(default_factory=list)
-    uncertainties: list[str] = Field(default_factory=list)
-    explanation: str = ""

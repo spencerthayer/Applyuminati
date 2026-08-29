@@ -25,8 +25,7 @@ __all__ = [
 
 #: JS expression that scans for interactive controls. Injected into ego lite
 #: scripts and evaluated by the Playwright backend's JS eval.
-CONTROL_SCAN_CALL_LITERAL = (
-    """(function() {
+CONTROL_SCAN_CALL_LITERAL = """(function() {
   const controls = [];
   const sel = 'input, textarea, select, button, a[href], [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"]';
   document.querySelectorAll(sel).forEach(function(el) {
@@ -53,7 +52,6 @@ CONTROL_SCAN_CALL_LITERAL = (
   });
   return controls;
 })()"""
-)
 
 #: Maximum text length we store from a page snapshot. Prevents a megabyte of
 #: minified SPA HTML from consuming the whole observation.
@@ -61,9 +59,18 @@ MAX_TEXT_CHARS = 20_000
 
 #: Patterns that indicate a bot interstitial, a login wall, or a human challenge.
 _CONDITION_PATTERNS: tuple[tuple[re.Pattern[str], PageCondition], ...] = (
-    (re.compile(r"captcha|are you a robot|please verify you are a human", re.I), PageCondition.HUMAN_CHALLENGE),
-    (re.compile(r"access denied|blocked|bot detection|unusual traffic|ddos protection", re.I), PageCondition.AUTOMATION_BLOCKED),
-    (re.compile(r"sign in|log in|please log in|login required|authenticate", re.I), PageCondition.LOGIN_REQUIRED),
+    (
+        re.compile(r"captcha|are you a robot|please verify you are a human", re.I),
+        PageCondition.HUMAN_CHALLENGE,
+    ),
+    (
+        re.compile(r"access denied|blocked|bot detection|unusual traffic|ddos protection", re.I),
+        PageCondition.AUTOMATION_BLOCKED,
+    ),
+    (
+        re.compile(r"sign in|log in|please log in|login required|authenticate", re.I),
+        PageCondition.LOGIN_REQUIRED,
+    ),
     (re.compile(r"rate limit|too many requests|slow down", re.I), PageCondition.RATE_LIMITED),
     (re.compile(r"404|not found|page does not exist", re.I), PageCondition.NOT_FOUND),
 )
@@ -85,15 +92,32 @@ def detect_condition(
     url: str,
     text: str | None,
     *,
-    extra_signals: dict[str, Any] | None = None,
+    dialog_open: bool = False,
+    has_password_field: bool = False,
+    challenge_markers: int = 0,
+    validation_errors: list[str] | None = None,
 ) -> PageCondition:
-    """Detect the page condition from URL and text content."""
-    if extra_signals and extra_signals.get("dialog"):
+    """Detect the page condition from URL, text, and DOM-scan signals.
+
+    Signal precedence: a blocking native dialog outranks everything else
+    (nothing else can be observed reliably until it is dismissed); explicit
+    validation errors from a submitted form outrank text heuristics; repeated
+    challenge markers (e.g. multiple CAPTCHA iframes) outrank the weaker
+    text-pattern match. Text patterns are checked last and are corroborated,
+    not overridden, by ``has_password_field``.
+    """
+    if dialog_open:
         return PageCondition.DIALOG_OPEN
+    if validation_errors:
+        return PageCondition.VALIDATION_ERROR
+    if challenge_markers > 0:
+        return PageCondition.HUMAN_CHALLENGE
     haystack = f"{url} {text or ''}"[:5000]
     for pattern, condition in _CONDITION_PATTERNS:
         if pattern.search(haystack):
             return condition
+    if has_password_field and re.search(r"\bpassword\b", haystack, re.I):
+        return PageCondition.LOGIN_REQUIRED
     return PageCondition.OK
 
 

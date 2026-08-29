@@ -23,9 +23,9 @@ class ResumeLocation(BaseModel):
     model_config = _CFG
 
     address: str | None = None
-    postalCode: str | None = None  # noqa: N815 - JSON Resume field name
+    postalCode: str | None = None
     city: str | None = None
-    countryCode: str | None = None  # noqa: N815
+    countryCode: str | None = None
     region: str | None = None
 
 
@@ -57,8 +57,8 @@ class ResumeWork(BaseModel):
     name: str | None = None
     position: str | None = None
     url: str | None = None
-    startDate: str | None = None  # noqa: N815
-    endDate: str | None = None  # noqa: N815
+    startDate: str | None = None
+    endDate: str | None = None
     summary: str | None = None
     highlights: list[str] = Field(default_factory=list)
     location: str | None = None
@@ -71,8 +71,8 @@ class ResumeVolunteer(BaseModel):
     organization: str | None = None
     position: str | None = None
     url: str | None = None
-    startDate: str | None = None  # noqa: N815
-    endDate: str | None = None  # noqa: N815
+    startDate: str | None = None
+    endDate: str | None = None
     summary: str | None = None
     highlights: list[str] = Field(default_factory=list)
 
@@ -83,9 +83,9 @@ class ResumeEducation(BaseModel):
     institution: str | None = None
     url: str | None = None
     area: str | None = None
-    studyType: str | None = None  # noqa: N815
-    startDate: str | None = None  # noqa: N815
-    endDate: str | None = None  # noqa: N815
+    studyType: str | None = None
+    startDate: str | None = None
+    endDate: str | None = None
     score: str | None = None
     courses: list[str] = Field(default_factory=list)
 
@@ -113,7 +113,7 @@ class ResumePublication(BaseModel):
 
     name: str | None = None
     publisher: str | None = None
-    releaseDate: str | None = None  # noqa: N815
+    releaseDate: str | None = None
     url: str | None = None
     summary: str | None = None
 
@@ -154,8 +154,8 @@ class ResumeProject(BaseModel):
     description: str | None = None
     highlights: list[str] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
-    startDate: str | None = None  # noqa: N815
-    endDate: str | None = None  # noqa: N815
+    startDate: str | None = None
+    endDate: str | None = None
     url: str | None = None
     roles: list[str] = Field(default_factory=list)
     entity: str | None = None
@@ -167,7 +167,7 @@ class ResumeMeta(BaseModel):
 
     canonical: str | None = None
     version: str | None = None
-    lastModified: str | None = None  # noqa: N815
+    lastModified: str | None = None
     theme: str | None = None
 
 

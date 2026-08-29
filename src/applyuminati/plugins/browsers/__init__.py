@@ -9,7 +9,7 @@ detection logic.
 
 from __future__ import annotations
 
-from applyuminati.plugins.browsers.shared import (  # noqa: F401
+from applyuminati.plugins.browsers.shared import (
     CONTROL_SCAN_CALL_LITERAL,
     MAX_TEXT_CHARS,
     detect_condition,

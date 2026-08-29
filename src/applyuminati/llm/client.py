@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from typing import Any, TypeVar
+from typing import Any
 
-from applyuminati.core.errors import BackendUnavailableError, ConfigurationError
+from applyuminati.core.errors import ConfigurationError
 from applyuminati.core.logging import get_logger
 from applyuminati.core.registry import HealthReport, HealthState
 from applyuminati.core.settings import Settings
@@ -22,12 +22,10 @@ from applyuminati.llm.base import (
     CompletionRequest,
     CompletionResponse,
     LLMCallRecord,
-    LLMCapability,
     LLMProvider,
-    Message,
     ModelT,
 )
-from applyuminati.llm.prompts.base import PROMPT_REGISTRY, get_prompt
+from applyuminati.llm.prompts.base import get_prompt
 from applyuminati.llm.structured import request_structured
 from applyuminati.llm.usage import UsageTracker
 
@@ -39,7 +37,12 @@ __all__ = ["LLMClient"]
 class LLMClient:
     """One facade for every model call in the system."""
 
-    def __init__(self, settings: Settings, *, call_sink: Callable[[LLMCallRecord], Awaitable[None]] | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        call_sink: Callable[[LLMCallRecord], Awaitable[None]] | None = None,
+    ) -> None:
         self._settings = settings
         self._providers: dict[str, LLMProvider] = {}
         self._tracker = UsageTracker(run_budget_usd=settings.llm.run_budget_usd)
@@ -157,17 +160,15 @@ class LLMClient:
         if not self.is_configured:
             return []
 
-        async def probe(name: str, config: Any) -> HealthReport:  # noqa: ANN401
+        async def probe(name: str, config: Any) -> HealthReport:
             try:
                 impl = self._get_provider(name)
                 return await impl.health()
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 return HealthReport(plugin=name, state=HealthState.UNAVAILABLE, detail=str(exc))
 
         tasks = [
-            probe(name, cfg)
-            for name, cfg in self._settings.llm.providers.items()
-            if cfg.enabled
+            probe(name, cfg) for name, cfg in self._settings.llm.providers.items() if cfg.enabled
         ]
         if not tasks:
             return []
@@ -178,7 +179,9 @@ class LLMClient:
                 reports.append(result)
             elif isinstance(result, Exception):
                 reports.append(
-                    HealthReport(plugin="unknown", state=HealthState.UNAVAILABLE, detail=str(result))
+                    HealthReport(
+                        plugin="unknown", state=HealthState.UNAVAILABLE, detail=str(result)
+                    )
                 )
         return reports
 
@@ -186,6 +189,6 @@ class LLMClient:
         for provider in self._providers.values():
             try:
                 await provider.aclose()
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:
+                log.debug("llm.provider_close_failed", exc_info=True)
         self._providers.clear()

@@ -100,7 +100,7 @@ def _compensation_text(view: JobView) -> str | None:
     low, high = comp.minimum, comp.maximum
     unit = comp.period.value
     if low is not None and high is not None:
-        return f"{comp.currency} {low:,.0f}–{high:,.0f} / {unit}"
+        return f"{comp.currency} {low:,.0f}-{high:,.0f} / {unit}"
     value = low if low is not None else high
     return f"{comp.currency} {value:,.0f} / {unit}"
 
@@ -197,9 +197,7 @@ def application_to_detail(view: ApplicationView) -> ApplicationDetail:
                 actor_detail=event.actor_detail,
                 reason=event.reason,
                 message=event.message,
-                failure_category=(
-                    event.failure_category.value if event.failure_category else None
-                ),
+                failure_category=(event.failure_category.value if event.failure_category else None),
             )
             for event in app.events
         ],

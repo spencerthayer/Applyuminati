@@ -91,7 +91,7 @@ def _infer_seniority(title: str) -> SeniorityLevel:
     return infer_seniority(title)
 
 
-def import_json_resume(
+def import_json_resume(  # noqa: PLR0912 -- sequential per-section parsing, not a code smell
     payload: dict[str, Any],
     *,
     label: str = "default",
@@ -106,7 +106,7 @@ def import_json_resume(
     warnings: list[str] = []
     try:
         resume = JsonResume.model_validate(payload)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         warnings.append(f"schema validation issues: {exc}")
         resume = JsonResume.model_validate({**payload, "basics": payload.get("basics", {})})
 
@@ -138,7 +138,7 @@ def import_json_resume(
             warnings.append(f"work[{index}] missing name or position; skipped")
             continue
         locator = f"work[{index}]"
-        role_claim = _claim(
+        _claim(
             f"{work.position} at {work.name}",
             locator,
             tags=[work.name.lower(), (work.position or "").lower()],
@@ -165,7 +165,11 @@ def import_json_resume(
     for index, cert in enumerate(resume.certificates):
         if not cert.name:
             continue
-        _claim(f"{cert.name} certificate from {cert.issuer or '(unknown)'}", f"certificates[{index}]", [])
+        _claim(
+            f"{cert.name} certificate from {cert.issuer or '(unknown)'}",
+            f"certificates[{index}]",
+            [],
+        )
 
     for index, pub in enumerate(resume.publications):
         if not pub.name:
@@ -186,9 +190,7 @@ def import_json_resume(
         _claim(f"Award: {award.title} from {award.awarder or '(unknown)'}", f"awards[{index}]", [])
 
     # Derive targets from the most recent positions when the caller supplied none.
-    seniority = (
-        _infer_seniority(recent_titles[0]) if recent_titles else SeniorityLevel.UNKNOWN
-    )
+    seniority = _infer_seniority(recent_titles[0]) if recent_titles else SeniorityLevel.UNKNOWN
     targets = JobTargets(
         titles=recent_titles,
         seniority=seniority,

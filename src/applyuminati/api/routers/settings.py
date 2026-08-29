@@ -51,5 +51,7 @@ async def update_strategy(
                 strategy=request.strategy, preset_name=request.preset
             )
         except ConfigurationError as exc:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message
+            ) from exc
     return {"strategy": strategy.model_dump(mode="json")}

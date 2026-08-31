@@ -1,0 +1,142 @@
+"""BrowserSession that forwards semantic commands to a live Browser Host."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from applyuminati.browser.base import (
+    ActionResult,
+    BrowserCheckpoint,
+    ControlOwner,
+    ElementRole,
+    PageElement,
+    PageObservation,
+)
+from applyuminati.browser.host_manager import BrowserHostManager, HostCommandError
+from applyuminati.browser.host_protocol import HostCommand
+from applyuminati.core.ids import new_ulid
+
+__all__ = ["HostedBrowserSession"]
+
+
+class HostedBrowserSession:
+    """One remote browsing context addressed through :class:`BrowserHostManager`."""
+
+    def __init__(self, manager: BrowserHostManager, host_id: str, session_id: str) -> None:
+        self._manager = manager
+        self._host_id = host_id
+        self.session_id = session_id
+        self._owner = ControlOwner.AGENT
+
+    @property
+    def owner(self) -> ControlOwner:
+        return self._owner
+
+    async def navigate(self, url: str, *, wait_for_load: bool = True) -> PageObservation:
+        payload = await self._ok(
+            HostCommand.NAVIGATE,
+            {"url": url, "wait_for_load": wait_for_load},
+        )
+        return PageObservation.model_validate(payload)
+
+    async def observe(self, *, include_text: bool = True) -> PageObservation:
+        payload = await self._ok(HostCommand.OBSERVE, {"include_text": include_text})
+        return PageObservation.model_validate(payload)
+
+    async def find_controls(self, *, role: ElementRole | None = None) -> list[PageElement]:
+        observation = await self.observe()
+        if role is None:
+            return list(observation.elements)
+        return [element for element in observation.elements if element.role is role]
+
+    async def fill_field(self, locator: str, value: str) -> ActionResult:
+        payload = await self._ok(HostCommand.FILL, {"locator": locator, "value": value})
+        return ActionResult.model_validate(payload)
+
+    async def select_option(self, locator: str, option: str) -> ActionResult:
+        payload = await self._ok(HostCommand.SELECT, {"locator": locator, "option": option})
+        return ActionResult.model_validate(payload)
+
+    async def set_checked(self, locator: str, checked: bool) -> ActionResult:
+        payload = await self._ok(HostCommand.SET_CHECKED, {"locator": locator, "checked": checked})
+        return ActionResult.model_validate(payload)
+
+    async def upload_file(self, locator: str, path: Path) -> ActionResult:
+        payload = await self._ok(HostCommand.UPLOAD, {"locator": locator, "path": str(path)})
+        return ActionResult.model_validate(payload)
+
+    async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
+        payload = await self._ok(
+            HostCommand.CLICK,
+            {"locator": locator, "label": label},
+            idempotency_key=f"click:{self.session_id}:{locator}:{new_ulid()}",
+        )
+        return ActionResult.model_validate(payload)
+
+    async def wait_for_navigation(self, *, timeout_seconds: float | None = None) -> ActionResult:
+        payload = await self._ok(
+            HostCommand.WAIT_FOR_NAVIGATION,
+            {"timeout_seconds": timeout_seconds},
+        )
+        return ActionResult.model_validate(payload)
+
+    async def screenshot(self, *, relative_path: str) -> str:
+        payload = await self._ok(HostCommand.SCREENSHOT, {"relative_path": relative_path})
+        return str(payload.get("path", relative_path))
+
+    async def checkpoint(self) -> BrowserCheckpoint:
+        payload = await self._ok(HostCommand.CHECKPOINT, {})
+        return BrowserCheckpoint.model_validate(payload)
+
+    async def request_human_control(self, instruction: str) -> ActionResult:
+        payload = await self._ok(HostCommand.REQUEST_HANDOFF, {"instruction": instruction})
+        self._owner = ControlOwner.DELEGATED_TO_USER
+        return ActionResult.model_validate(payload)
+
+    async def control_state(self) -> ControlOwner:
+        payload = await self._ok(HostCommand.CONTROL_STATE, {})
+        self._owner = ControlOwner(str(payload.get("owner", ControlOwner.AGENT.value)))
+        return self._owner
+
+    async def wait_for_control(self, *, timeout_seconds: float) -> ActionResult:
+        owner = await self.control_state()
+        return ActionResult(ok=owner is ControlOwner.AGENT, action="wait")
+
+    async def reclaim_control(self, *, confirmed_by_user: bool) -> ActionResult:
+        payload = await self._ok(
+            HostCommand.RECLAIM_CONTROL,
+            {"confirmed_by_user": confirmed_by_user},
+        )
+        result = ActionResult.model_validate(payload)
+        if result.ok:
+            self._owner = ControlOwner.AGENT
+        return result
+
+    async def close(self) -> None:
+        await self._ok(HostCommand.CLOSE_SESSION, {})
+
+    async def _ok(
+        self,
+        command: HostCommand,
+        params: dict[str, object],
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, object]:
+        try:
+            result = await self._manager.dispatch(
+                self._host_id,
+                command,
+                session_id=self.session_id,
+                params=params,
+                idempotency_key=idempotency_key,
+            )
+        except HostCommandError as exc:
+            return {"ok": False, "action": command.value, "detail": exc.message}
+        if not result.ok:
+            return {
+                "ok": False,
+                "action": command.value,
+                "detail": result.error_message or result.error_code,
+            }
+        payload = result.result
+        return payload if isinstance(payload, dict) else {}

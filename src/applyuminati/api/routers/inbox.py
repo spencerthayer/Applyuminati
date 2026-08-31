@@ -8,11 +8,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from applyuminati.api.dependencies import get_repositories
+from applyuminati.api.dependencies import get_container_dep, get_repositories
 from applyuminati.core.errors import NotFoundError
 from applyuminati.core.models.execution import InterventionResolution
-from applyuminati.services.attempt_service import AttemptService
-from applyuminati.services.container import Repositories
+from applyuminati.services.attempt_service import AttemptService, host_presence
+from applyuminati.services.container import Repositories, ServiceContainer
 
 router = APIRouter(prefix="/api/v1/needs-you", tags=["needs-you"])
 
@@ -33,7 +33,17 @@ class InboxEntry(BaseModel):
     browser_host_id: str | None = None
     browser_session_id: str | None = None
     task_space_id: str | None = None
+    host_presence: str = "not_required"
     opened_at: datetime
+
+
+class OpenBrowserResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    ok: bool
+    host_presence: str
+    task_space_id: str | None = None
+    detail: str
 
 
 class ResolveRequest(BaseModel):
@@ -52,8 +62,12 @@ class ResolveResponse(BaseModel):
 
 
 @router.get("", response_model=list[InboxEntry])
-async def list_inbox(repos: Repositories = Depends(get_repositories)) -> list[InboxEntry]:
+async def list_inbox(
+    repos: Repositories = Depends(get_repositories),
+    container: ServiceContainer = Depends(get_container_dep),
+) -> list[InboxEntry]:
     items = await AttemptService(repos).inbox()
+    manager = container.browser_hosts
     return [
         InboxEntry(
             attempt_id=item.attempt.id,
@@ -69,10 +83,37 @@ async def list_inbox(repos: Repositories = Depends(get_repositories)) -> list[In
             browser_host_id=item.intervention.browser_host_id,
             browser_session_id=item.intervention.browser_session_id,
             task_space_id=item.intervention.task_space_id,
+            host_presence=host_presence(item.attempt, item.intervention, manager).value,
             opened_at=item.intervention.opened_at,
         )
         for item in items
     ]
+
+
+@router.post("/{attempt_id}/open-browser", response_model=OpenBrowserResponse)
+async def open_browser(
+    attempt_id: str,
+    repos: Repositories = Depends(get_repositories),
+    container: ServiceContainer = Depends(get_container_dep),
+) -> OpenBrowserResponse:
+    service = AttemptService(repos)
+    try:
+        attempt = await service.get(attempt_id)
+    except NotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
+    intervention = attempt.pending_intervention
+    instruction = (
+        intervention.instruction if intervention is not None else "Take over this application."
+    )
+    result = await service.activate_browser(
+        attempt, manager=container.browser_hosts, instruction=instruction
+    )
+    return OpenBrowserResponse(
+        ok=bool(result["ok"]),
+        host_presence=str(result["host_presence"]),
+        task_space_id=result.get("task_space_id"),
+        detail=str(result["detail"]),
+    )
 
 
 @router.post("/{attempt_id}/{intervention_id}", response_model=ResolveResponse)

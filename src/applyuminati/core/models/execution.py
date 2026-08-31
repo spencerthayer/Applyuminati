@@ -83,6 +83,7 @@ BROWSER_HANDOFF_REASONS: frozenset[InterventionReason] = frozenset(
         InterventionReason.IDENTITY_VERIFICATION,
         InterventionReason.AUTOMATION_BLOCKED,
         InterventionReason.UNKNOWN_INTERACTION,
+        InterventionReason.USER_REVIEW,
     }
 )
 

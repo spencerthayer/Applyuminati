@@ -175,9 +175,10 @@ as privileged.
 * **Pairing.** `POST /api/v1/browser-hosts/pair` mints a 32-byte
   `secrets.token_urlsafe` credential and stores only a SHA-256 hash plus a
   short non-secret prefix for display. The plaintext is returned once.
-* **Authentication.** Every connection presents the credential in the
-  `Authorization: Bearer` header. Verification is constant-time.
-  Authentication happens before any command can be dispatched.
+* **Authentication.** The first validated `RegisterMessage` carries the pairing
+  credential. The WebSocket router authenticates that frame before the host is
+  attached. Verification is constant-time. Authentication happens before any
+  command can be dispatched. There is no Bearer header on this socket.
 * **Revocation.** `POST /api/v1/browser-hosts/{id}/revoke` marks the credential
   revoked and closes live connections using it.
 * **Separate from human auth.** A browser-host credential cannot call the human

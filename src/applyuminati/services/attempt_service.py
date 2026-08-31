@@ -7,11 +7,15 @@ Resume requeues from the checkpoint after an explicit user resolution.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from enum import StrEnum
 from typing import Any
 
 from applyuminati.applications.detect import detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcomeKind, detect_driver
 from applyuminati.browser.base import BrowserSession
+from applyuminati.browser.host_manager import BrowserHostManager
+from applyuminati.browser.host_protocol import HostCommand
 from applyuminati.core.clock import utcnow
 from applyuminati.core.errors import NotFoundError
 from applyuminati.core.logging import get_logger
@@ -27,10 +31,52 @@ from applyuminati.core.models.profile import CareerProfile
 from applyuminati.core.models.questionnaire import AnswerStatus
 from applyuminati.core.settings import ExecutionMode
 from applyuminati.services.container import Repositories
+from applyuminati.services.hosted_session import HostedBrowserSession
+from applyuminati.tasks.queue import TaskQueue
 
 log = get_logger(__name__)
 
-__all__ = ["AttemptService", "InboxItem"]
+__all__ = [
+    "APPLICATION_ATTEMPT_KIND",
+    "AttemptService",
+    "HostPresence",
+    "InboxItem",
+    "host_presence",
+]
+
+#: Durable queue kind for one application attempt. Payload is the attempt id.
+APPLICATION_ATTEMPT_KIND = "application.attempt"
+
+SessionFactory = Callable[[ApplicationAttempt], Awaitable[BrowserSession | None]]
+
+
+class HostPresence(StrEnum):
+    """Live host state as the inbox should show it."""
+
+    CONNECTED = "connected"
+    OFFLINE = "offline"
+    SESSION_UNAVAILABLE = "session_unavailable"
+    NOT_REQUIRED = "not_required"
+
+
+def host_presence(
+    attempt: ApplicationAttempt,
+    intervention: HumanIntervention,
+    manager: BrowserHostManager | None,
+) -> HostPresence:
+    """Reconcile the persisted host id with live Browser Host presence."""
+    if not intervention.requires_browser_handoff:
+        return HostPresence.NOT_REQUIRED
+    host_id = intervention.browser_host_id or attempt.browser_host_id
+    if not host_id:
+        return HostPresence.SESSION_UNAVAILABLE
+    if manager is None or not manager.is_connected(host_id):
+        return HostPresence.OFFLINE
+    live = manager.connected(host_id)
+    session_id = intervention.browser_session_id or attempt.browser_session_id
+    if live is not None and session_id and session_id not in live.open_sessions:
+        return HostPresence.SESSION_UNAVAILABLE
+    return HostPresence.CONNECTED
 
 
 class InboxItem:
@@ -73,8 +119,8 @@ class AttemptService:
             driver=driver_name,
             submission_mode=mode,
             browser_host_id=browser_host_id,
-            task_space_id=f"applyuminati:{application_id}",
         )
+        attempt.task_space_id = f"applyuminati:{attempt.id}"
         await self._repos.attempts.save(attempt)
         log.info(
             "attempt.created",
@@ -158,29 +204,120 @@ class AttemptService:
                     draft.answer = str(payload["answer"])
                     draft.status = AnswerStatus.USER_PROVIDED
 
-        intervention.resolve(resolution, payload=payload)
-        attempt.workflow_state = WorkflowState.PENDING
-        attempt.record_event(
-            AttemptEventKind.RESUMED,
-            "user returned control",
-            resolution=resolution.value,
-        )
-        await self._repos.attempts.save(attempt)
+        if intervention.open:
+            intervention.resolve(resolution, payload=payload)
+            attempt.workflow_state = WorkflowState.PENDING
+            attempt.record_event(
+                AttemptEventKind.RESUMED,
+                "user returned control",
+                resolution=resolution.value,
+            )
+            await self._repos.attempts.save(attempt)
+        await self.enqueue_resume(attempt)
         return attempt
+
+    async def enqueue_resume(self, attempt: ApplicationAttempt) -> None:
+        """Queue exactly one resumable attempt task. Idempotent while pending."""
+        queue = TaskQueue(self._repos.tasks)
+        await queue.submit(
+            APPLICATION_ATTEMPT_KIND,
+            {"attempt_id": attempt.id},
+            idempotency_key=f"{APPLICATION_ATTEMPT_KIND}:{attempt.id}",
+        )
+
+    async def bind_session(
+        self,
+        attempt: ApplicationAttempt,
+        *,
+        manager: BrowserHostManager | None = None,
+        session_factory: SessionFactory | None = None,
+    ) -> BrowserSession | None:
+        """Attach the attempt to a live host session, or a test factory."""
+        if session_factory is not None:
+            return await session_factory(attempt)
+        if manager is None or not attempt.browser_host_id:
+            return None
+        if not manager.is_connected(attempt.browser_host_id):
+            return None
+        session_id = attempt.browser_session_id
+        if not session_id:
+            result = await manager.dispatch(
+                attempt.browser_host_id,
+                HostCommand.CREATE_SESSION,
+                params={"backend": attempt.browser_backend} if attempt.browser_backend else {},
+                idempotency_key=f"create-session:{attempt.id}",
+            )
+            if not result.ok or not result.result.get("session_id"):
+                return None
+            session_id = str(result.result["session_id"])
+            attempt.browser_session_id = session_id
+        return HostedBrowserSession(manager, attempt.browser_host_id, session_id)
+
+    async def activate_browser(
+        self,
+        attempt: ApplicationAttempt,
+        *,
+        manager: BrowserHostManager,
+        instruction: str,
+    ) -> dict[str, Any]:
+        """Ask the live host to surface the session for a human."""
+        open_item = attempt.pending_intervention
+        reference = open_item or (attempt.interventions[-1] if attempt.interventions else None)
+        if reference is None:
+            return {
+                "ok": False,
+                "host_presence": HostPresence.SESSION_UNAVAILABLE.value,
+                "task_space_id": attempt.task_space_id,
+                "detail": "No open intervention is attached to this attempt.",
+            }
+        presence = host_presence(attempt, reference, manager)
+        if presence is HostPresence.OFFLINE:
+            return {
+                "ok": False,
+                "host_presence": presence.value,
+                "task_space_id": attempt.task_space_id,
+                "detail": "The Mac Browser Host is offline. Start applyuminati-browser-host.",
+            }
+        if presence is HostPresence.SESSION_UNAVAILABLE:
+            return {
+                "ok": False,
+                "host_presence": presence.value,
+                "task_space_id": attempt.task_space_id,
+                "detail": "The browser session is not available on the host.",
+            }
+        session = await self.bind_session(attempt, manager=manager)
+        if session is None:
+            return {
+                "ok": False,
+                "host_presence": HostPresence.SESSION_UNAVAILABLE.value,
+                "task_space_id": attempt.task_space_id,
+                "detail": "Could not attach the host session.",
+            }
+        result = await session.request_human_control(instruction)
+        return {
+            "ok": result.ok,
+            "host_presence": HostPresence.CONNECTED.value,
+            "task_space_id": attempt.task_space_id,
+            "detail": result.detail or "The host was asked to open the browser task space.",
+        }
 
     async def run_step(
         self,
         attempt: ApplicationAttempt,
         session: BrowserSession,
         context: DriverContext,
+        *,
+        driver: Any | None = None,
     ) -> ApplicationAttempt:
-        matched = detect_driver(context.job.apply_url or context.job.canonical_url)
-        if matched is None:
-            attempt.workflow_state = WorkflowState.FAILED
-            await self._repos.attempts.save(attempt)
-            return attempt
-        driver, _detection = matched
-        outcome = await driver.run(attempt, session, context)
+        selected = driver
+        if selected is None:
+            matched = detect_driver(context.job.apply_url or context.job.canonical_url)
+            if matched is None:
+                attempt.workflow_state = WorkflowState.FAILED
+                await self._repos.attempts.save(attempt)
+                return attempt
+            selected, _detection = matched
+        outcome = await selected.run(attempt, session, context)
         if outcome.kind is DriverOutcomeKind.WAITING_FOR_HUMAN:
             attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN
         await self._repos.attempts.save(attempt)

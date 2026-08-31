@@ -15,7 +15,14 @@ from applyuminati.browser.base import (
     PageElement,
     PageObservation,
 )
-from applyuminati.core.models.execution import ApplicationAttempt, InterventionReason
+from applyuminati.core.clock import utcnow
+from applyuminati.core.models.execution import (
+    ApplicationAttempt,
+    CheckpointKind,
+    InterventionReason,
+    SubmissionCertainty,
+    WorkflowState,
+)
 from applyuminati.core.models.job import AtsVendor, SourceTier
 from applyuminati.core.models.profile import CareerProfile, QuestionnaireDefault
 from applyuminati.core.models.questionnaire import ApplicationQuestion, QuestionKind
@@ -274,3 +281,107 @@ async def test_fill_without_submit_never_clicks_submit() -> None:
     assert outcome.kind is DriverOutcomeKind.COMPLETED
     assert session.clicks == []
     assert attempt.submission_attempted_at is None
+
+
+def _greenhouse_form(apply_url: str) -> PageObservation:
+    return PageObservation(
+        url=apply_url,
+        title="Apply",
+        text="Application form",
+        elements=[
+            PageElement(locator="submit", role=ElementRole.BUTTON, label="Submit application")
+        ],
+    )
+
+
+async def test_uncertain_evidence_after_click_opens_user_review() -> None:
+    apply_url = "https://boards.greenhouse.io/acme/jobs/1"
+    form = _greenhouse_form(apply_url)
+    session = FakeSession({apply_url: form})
+    job = build_job(
+        source="greenhouse",
+        tier=SourceTier.DIRECT_ATS,
+        source_job_id="1",
+        url=apply_url,
+        title="Engineer",
+        company="Acme",
+    )
+    attempt = ApplicationAttempt(application_id="a", job_id="j", driver="greenhouse")
+    outcome = await GreenhouseDriver().run(
+        attempt,
+        session,
+        DriverContext(job=job, profile=CareerProfile(), mode=ExecutionMode.AUTONOMOUS_SUBMIT),
+    )
+    assert outcome.kind is DriverOutcomeKind.WAITING_FOR_HUMAN
+    assert outcome.intervention is not None
+    assert outcome.intervention.reason is InterventionReason.USER_REVIEW
+    assert attempt.workflow_state is WorkflowState.WAITING_FOR_HUMAN
+    assert attempt.submission_attempted_at is not None
+    assert attempt.evidence.certainty is SubmissionCertainty.UNCERTAIN
+    assert not any(
+        checkpoint.kind == CheckpointKind.SUBMISSION_CONFIRMED.value
+        for checkpoint in attempt.checkpoints
+    )
+    assert session.clicks == ["submit"]
+
+
+async def test_uncertain_evidence_on_restart_does_not_click_again() -> None:
+    apply_url = "https://boards.greenhouse.io/acme/jobs/1"
+    form = _greenhouse_form(apply_url)
+    session = FakeSession({apply_url: form})
+    job = build_job(
+        source="greenhouse",
+        tier=SourceTier.DIRECT_ATS,
+        source_job_id="1",
+        url=apply_url,
+        title="Engineer",
+        company="Acme",
+    )
+    attempt = ApplicationAttempt(application_id="a", job_id="j", driver="greenhouse")
+    attempt.submission_attempted_at = utcnow()
+    outcome = await GreenhouseDriver().run(
+        attempt,
+        session,
+        DriverContext(job=job, profile=CareerProfile(), mode=ExecutionMode.AUTONOMOUS_SUBMIT),
+    )
+    assert outcome.kind is DriverOutcomeKind.WAITING_FOR_HUMAN
+    assert outcome.intervention is not None
+    assert outcome.intervention.reason is InterventionReason.USER_REVIEW
+    assert attempt.workflow_state is WorkflowState.WAITING_FOR_HUMAN
+    assert attempt.submission_attempted_at is not None
+    assert session.clicks == []
+    assert not any(
+        checkpoint.kind == CheckpointKind.SUBMISSION_CONFIRMED.value
+        for checkpoint in attempt.checkpoints
+    )
+
+
+async def test_likely_evidence_is_enough_to_complete() -> None:
+    apply_url = "https://boards.greenhouse.io/acme/jobs/1"
+    form = _greenhouse_form(apply_url)
+    thanks = PageObservation(
+        url=apply_url + "/thanks",
+        title="Done",
+        text="Thank you. Application received.",
+    )
+    session = FakeSession({apply_url: form, thanks.url: thanks})
+    job = build_job(
+        source="greenhouse",
+        tier=SourceTier.DIRECT_ATS,
+        source_job_id="1",
+        url=apply_url,
+        title="Engineer",
+        company="Acme",
+    )
+    attempt = ApplicationAttempt(application_id="a", job_id="j", driver="greenhouse")
+    outcome = await GreenhouseDriver().run(
+        attempt,
+        session,
+        DriverContext(job=job, profile=CareerProfile(), mode=ExecutionMode.AUTONOMOUS_SUBMIT),
+    )
+    assert outcome.kind is DriverOutcomeKind.COMPLETED
+    assert attempt.evidence.certainty is SubmissionCertainty.LIKELY
+    assert any(
+        checkpoint.kind == CheckpointKind.SUBMISSION_CONFIRMED.value
+        for checkpoint in attempt.checkpoints
+    )

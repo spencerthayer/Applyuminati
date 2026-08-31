@@ -208,6 +208,10 @@ class PlaywrightSession(BrowserSession):
             condition=PageCondition.UNKNOWN,
         )
 
+    async def control_state(self) -> ControlOwner:
+        """Always the agent: there is no other party in this browser."""
+        return self._owner
+
     async def wait_for_control(self, *, timeout_seconds: float) -> ActionResult:
         """Nothing to wait for: this backend never gives control away."""
         if self._owner is ControlOwner.AGENT:
@@ -217,6 +221,17 @@ class PlaywrightSession(BrowserSession):
             action="wait_for_control",
             detail="the playwright backend has no handoff to return from",
         )
+
+    async def reclaim_control(self, *, confirmed_by_user: bool) -> ActionResult:
+        """Nothing was ever handed over, so there is nothing to reclaim."""
+        if not confirmed_by_user:
+            return ActionResult(
+                ok=False,
+                action="reclaim_control",
+                detail="reclaim requires an explicit user confirmation",
+            )
+        self._owner = ControlOwner.AGENT
+        return ActionResult(ok=True, action="reclaim_control", detail="already the owner")
 
     async def close(self) -> None:
         try:

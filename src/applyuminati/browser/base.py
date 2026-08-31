@@ -274,8 +274,33 @@ class BrowserSession(Protocol):
         """Hand the session to the user with an explicit instruction."""
         ...
 
+    async def control_state(self) -> ControlOwner:
+        """Who currently owns the session, according to the backend.
+
+        Read-only, and worth asking rather than trusting our own last write: the
+        user may have handed control back in the browser while this process was
+        not running.
+        """
+        ...
+
     async def wait_for_control(self, *, timeout_seconds: float) -> ActionResult:
-        """Block until the user returns control. Never seizes it."""
+        """Block until the user hands control back. Never seizes it.
+
+        A timeout is a report, not a licence. Returning ``ok=False`` here means
+        "the person is still working"; it must not be read as permission to
+        start driving.
+        """
+        ...
+
+    async def reclaim_control(self, *, confirmed_by_user: bool) -> ActionResult:
+        """Take ownership back after the user said they were finished.
+
+        ``confirmed_by_user`` is required and must be true. Seizing a session
+        while a person is typing their password into it is the single worst thing
+        this contract could do, and a keyword that has to be passed explicitly at
+        every call site is the cheapest way to keep an accidental reclaim from
+        being written. A timer is not a confirmation.
+        """
         ...
 
     async def close(self) -> None: ...

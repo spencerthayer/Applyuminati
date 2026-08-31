@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import json
 import os
 import shutil
@@ -299,6 +298,19 @@ _TASK_SPACE_CALL: dict[EgoSurface, str] = {
     EgoSurface.UNKNOWN: "useOrCreateTaskSpace",
 }
 
+#: Prefix for task-space names, so a space belonging to an application attempt
+#: is recognisable in the ego lite UI when a person is handed control of it.
+TASK_SPACE_PREFIX = "applyuminati"
+
+#: ego lite ownership strings mapped onto our own vocabulary. We adopt the
+#: harness's model rather than running a competing one, because two systems each
+#: believing they own the browser is how a person gets interrupted mid-login.
+_OWNERSHIP: dict[str, ControlOwner] = {
+    "agent": ControlOwner.AGENT,
+    "agentDelegatedToUser": ControlOwner.DELEGATED_TO_USER,
+    "user": ControlOwner.USER,
+}
+
 #: Result envelope marker. Programs may legitimately log other things, so the
 #: parser looks for this key rather than assuming the last line is ours.
 RESULT_KEY = "__applyuminati__"
@@ -321,7 +333,54 @@ __emit(JSON.stringify({
 """.strip()
 
 
-def build_script(body: str, *, task_space_id: int, surface: EgoSurface) -> str:
+@dataclass(frozen=True, slots=True)
+class TaskSpaceRef:
+    """How to reach one task space across separate helper invocations.
+
+    ``useOrCreateTaskSpace`` behaves differently depending on the argument type,
+    and getting this wrong is why the previous implementation could never start
+    an attempt. Given a **name string** it finds a space by name or creates one.
+    Given a **number** it looks up an existing numeric id and fails when there is
+    none, so passing a locally derived number could only ever work for a space
+    that already happened to exist.
+
+    So a session opens by name, and records the numeric id the call reports so
+    later rounds can address the space directly. The name is the durable
+    identity; the numeric id is an optimisation, and its absence is not an error.
+    """
+
+    name: str
+    numeric_id: int | None = None
+
+    @classmethod
+    def for_session(cls, session_id: str) -> TaskSpaceRef:
+        return cls(name=f"{TASK_SPACE_PREFIX}:{session_id}")
+
+    def js_argument(self) -> str:
+        """The argument to ``useOrCreateTaskSpace``, preferring the numeric id."""
+        return _js(self.numeric_id if self.numeric_id is not None else self.name)
+
+    def with_numeric_id(self, numeric_id: int | None) -> TaskSpaceRef:
+        if numeric_id is None or numeric_id == self.numeric_id:
+            return self
+        return TaskSpaceRef(name=self.name, numeric_id=numeric_id)
+
+
+#: The task-space id is reported alongside every result, because a program that
+#: creates the space is the only one that learns its numeric id, and any call may
+#: be the one that creates it.
+_TASK_SPACE_ID_EXPRESSION = """
+  (() => {
+    const s = __space;
+    if (s === null || s === undefined) return null;
+    if (typeof s === 'number') return s;
+    const candidate = s.id ?? s.taskSpaceId ?? (s.task && s.task.id);
+    return typeof candidate === 'number' ? candidate : null;
+  })()
+""".strip()
+
+
+def build_script(body: str, *, task_space: TaskSpaceRef, surface: EgoSurface) -> str:
     """Wrap ``body`` in the task-space preamble and the result protocol.
 
     ``body`` is a JavaScript statement list evaluated inside an async function;
@@ -338,16 +397,23 @@ const __run = async () => {{
 {indented}
 }};
 (async () => {{
+  let __space = null;
   try {{
-    await {open_space}({task_space_id});
+    __space = await {open_space}({task_space.js_argument()});
     const __value = await __run();
-    __emit({{ {RESULT_KEY}: true, ok: true, value: __value === undefined ? null : __value }});
+    __emit({{
+      {RESULT_KEY}: true,
+      ok: true,
+      value: __value === undefined ? null : __value,
+      task_space_id: {_TASK_SPACE_ID_EXPRESSION}
+    }});
   }} catch (err) {{
     // Emit rather than rethrow: a thrown script loses stdout entirely.
     __emit({{
       {RESULT_KEY}: true,
       ok: false,
-      error: String((err && err.stack) || err)
+      error: String((err && err.stack) || err),
+      task_space_id: {_TASK_SPACE_ID_EXPRESSION}
     }});
   }}
 }})();
@@ -367,16 +433,6 @@ def parse_envelope(stdout: str) -> dict[str, Any] | None:
         if isinstance(parsed, dict) and parsed.get(RESULT_KEY):
             return parsed
     return None
-
-
-def task_space_id_for(session_id: str) -> int:
-    """Derive a stable numeric task-space id from a session id.
-
-    Deterministic so that resuming a checkpoint without a recorded id still
-    lands in the same space.
-    """
-    digest = hashlib.blake2b(session_id.encode("utf-8"), digest_size=4).digest()
-    return int.from_bytes(digest, "big") % 900_000_000 + 1_000
 
 
 def _js(value: Any) -> str:
@@ -442,22 +498,54 @@ return {{ handed_off: true }};
 
 
 def _body_wait_for_control(timeout_seconds: float, *, surface: EgoSurface) -> str:
-    # waitForAgentControl resolves only when the user gives control back. We
-    # take over *after* that, never before: seizing control from a person
-    # mid-login is the one thing this protocol exists to prevent.
+    """Poll for the user handing control back. Read-only, deliberately.
+
+    This used to call ``takeOverTaskSpace`` immediately after the poll resolved,
+    which is the one thing the harness warns against: takeover performs no
+    ownership check, so it will happily yank the page out from under someone
+    halfway through a login. Worse, the takeover ran even when the poll had
+    already returned control legitimately, making it pure risk for no gain.
+
+    Waiting and reclaiming are now separate operations, and reclaiming needs an
+    explicit user confirmation rather than the expiry of a timer.
+    """
     wait = (
         f"taskSpaces.waitForAgentControl({{ timeoutSeconds: {timeout_seconds} }})"
         if surface is EgoSurface.OBJECT
         else f"waitForAgentControl({{ timeoutSeconds: {timeout_seconds} }})"
     )
-    take = "taskSpaces.takeOver()" if surface is EgoSurface.OBJECT else "takeOverTaskSpace()"
     return f"""
 const __granted = await {wait};
-if (__granted === false) {{
-  return {{ granted: false }};
-}}
+return {{ granted: __granted !== false }};
+""".strip()
+
+
+def _body_reclaim_control(*, surface: EgoSurface) -> str:
+    """Take ownership back. Only ever called after the user confirmed."""
+    take = "taskSpaces.takeOver()" if surface is EgoSurface.OBJECT else "takeOverTaskSpace()"
+    return f"""
 await {take};
-return {{ granted: true }};
+return {{ reclaimed: true }};
+""".strip()
+
+
+def _body_control_state(*, surface: EgoSurface) -> str:
+    """Read current ownership from the browser rather than from our own memory.
+
+    Our record of who owns the session is a guess after any gap: the user may
+    have handed control back while Applyuminati was restarting.
+    """
+    call = "taskSpaces.ownership()" if surface is EgoSurface.OBJECT else "taskSpaceOwnership()"
+    return f"""
+let __ownership = null;
+try {{
+  __ownership = await {call};
+}} catch (err) {{
+  // Older builds may not expose ownership; an unknown answer is honest and the
+  // caller keeps its last known value rather than assuming it may drive.
+  __ownership = null;
+}}
+return {{ ownership: __ownership }};
 """.strip()
 
 
@@ -474,12 +562,12 @@ class EgoLiteSession:
         backend: EgoLiteBackend,
         *,
         session_id: str,
-        task_space_id: int,
+        task_space: TaskSpaceRef,
         surface: EgoSurface,
     ) -> None:
         self._backend = backend
         self._session_id = session_id
-        self._task_space_id = task_space_id
+        self._task_space = task_space
         self._surface = surface
         self._owner = ControlOwner.AGENT
         self._url = ""
@@ -498,8 +586,9 @@ class EgoLiteSession:
         return self._owner
 
     @property
-    def task_space_id(self) -> int:
-        return self._task_space_id
+    def task_space(self) -> TaskSpaceRef:
+        """The durable browser identity for this attempt."""
+        return self._task_space
 
     # -- plumbing ---------------------------------------------------------
 
@@ -511,7 +600,7 @@ class EgoLiteSession:
         """
         if self._closed:
             return {"ok": False, "error": "session is closed"}
-        script = build_script(body, task_space_id=self._task_space_id, surface=self._surface)
+        script = build_script(body, task_space=self._task_space, surface=self._surface)
         try:
             run = await self._backend.run_script(script, timeout=timeout)
         except EgoHelperError as exc:
@@ -519,7 +608,19 @@ class EgoLiteSession:
         envelope = parse_envelope(run.stdout)
         if envelope is None:
             return {"ok": False, "error": run.failure_detail()}
+        self._absorb_task_space_id(envelope.get("task_space_id"))
         return envelope
+
+    def _absorb_task_space_id(self, reported: Any) -> None:
+        """Learn the numeric id the first program to create the space reports.
+
+        Any call may be the one that creates the space, so every envelope is
+        checked. Once known it is used in place of the name, and it is what the
+        checkpoint carries so a later process re-enters the same space.
+        """
+        if not isinstance(reported, int) or isinstance(reported, bool):
+            return
+        self._task_space = self._task_space.with_numeric_id(reported)
 
     def _guard_user_control(self, action: str) -> ActionResult | None:
         """Refuse to act while the user holds the session."""
@@ -727,8 +828,23 @@ return true;
         log.info("ego_lite.handoff", session=self._session_id, instruction=instruction)
         return ActionResult(ok=True, action="request_human_control", detail=instruction)
 
+    async def control_state(self) -> ControlOwner:
+        """Ask the browser who owns the session, not our own memory of it."""
+        envelope = await self._call(_body_control_state(surface=self._surface))
+        value = envelope.get("value") if envelope.get("ok") else None
+        raw = value.get("ownership") if isinstance(value, dict) else None
+        owner = _OWNERSHIP.get(str(raw)) if raw is not None else None
+        if owner is not None:
+            self._owner = owner
+        return self._owner
+
     async def wait_for_control(self, *, timeout_seconds: float) -> ActionResult:
-        """Block until the user hands control back. Never seizes it."""
+        """Block until the user hands control back. Never seizes it.
+
+        A timeout is reported, not resolved. ``ok=False`` here means the person
+        is still working, and the correct response is to leave the attempt
+        waiting rather than to start driving.
+        """
         if self._owner is ControlOwner.AGENT:
             return ActionResult(ok=True, action="wait_for_control", detail="already the owner")
         envelope = await self._call(
@@ -749,8 +865,35 @@ return true;
                 action="wait_for_control",
                 detail=f"user still holds the session after {timeout_seconds:.0f}s",
             )
+        # The poll resolving *is* the user returning control; there is nothing
+        # left to take. This is where the old code called takeOver anyway.
         self._owner = ControlOwner.AGENT
         return ActionResult(ok=True, action="wait_for_control")
+
+    async def reclaim_control(self, *, confirmed_by_user: bool) -> ActionResult:
+        """Take ownership back, only on an explicit user confirmation."""
+        if not confirmed_by_user:
+            return ActionResult(
+                ok=False,
+                action="reclaim_control",
+                detail=(
+                    "refusing to take control without an explicit user confirmation; "
+                    "takeOverTaskSpace performs no ownership check and would interrupt "
+                    "whatever the person is doing"
+                ),
+            )
+        if self._owner is ControlOwner.AGENT:
+            return ActionResult(ok=True, action="reclaim_control", detail="already the owner")
+        envelope = await self._call(_body_reclaim_control(surface=self._surface))
+        if not envelope.get("ok"):
+            return ActionResult(
+                ok=False,
+                action="reclaim_control",
+                detail=str(envelope.get("error") or "reclaim failed"),
+            )
+        self._owner = ControlOwner.AGENT
+        log.info("ego_lite.reclaimed", session=self._session_id)
+        return ActionResult(ok=True, action="reclaim_control")
 
     # -- lifecycle --------------------------------------------------------
 
@@ -761,7 +904,10 @@ return true;
             url=self._url,
             backend_state={
                 "backend": SLUG,
-                "task_space_id": self._task_space_id,
+                # The name is the durable identity and is always present; the
+                # numeric id is only known once a program has opened the space.
+                "task_space_name": self._task_space.name,
+                "task_space_id": self._task_space.numeric_id,
                 "surface": self._surface.value,
                 "owner": self._owner.value,
             },
@@ -792,6 +938,24 @@ return true;
 # ---------------------------------------------------------------------------
 # Backend
 # ---------------------------------------------------------------------------
+
+
+def _resume_task_space(session_id: str, resume: BrowserCheckpoint | None) -> TaskSpaceRef:
+    """The task space a session should open, resumed or fresh."""
+    if resume is None:
+        return TaskSpaceRef.for_session(session_id)
+    state = resume.backend_state
+    recorded_name = state.get("task_space_name")
+    name = (
+        str(recorded_name)
+        if isinstance(recorded_name, str) and recorded_name
+        else TaskSpaceRef.for_session(resume.session_id or session_id).name
+    )
+    recorded_id = state.get("task_space_id")
+    numeric = (
+        recorded_id if isinstance(recorded_id, int) and not isinstance(recorded_id, bool) else None
+    )
+    return TaskSpaceRef(name=name, numeric_id=numeric)
 
 
 class EgoLiteBackend:
@@ -940,15 +1104,18 @@ class EgoLiteBackend:
     async def open_session(
         self, *, session_id: str | None = None, resume: BrowserCheckpoint | None = None
     ) -> EgoLiteSession:
-        """Open (or re-enter) a task space and wrap it in a session."""
+        """Open (or re-enter) a task space and wrap it in a session.
+
+        Resuming prefers the recorded name over the numeric id, because the name
+        is what created the space and is always present, while an id recorded by
+        an older build may be absent or stale.
+        """
         self._resolve_helper()
         sid = session_id or (resume.session_id if resume else None) or new_ulid()
-        recorded = (resume.backend_state.get("task_space_id") if resume else None) or None
-        task_space = int(recorded) if isinstance(recorded, int) else task_space_id_for(sid)
         session = EgoLiteSession(
             self,
             session_id=sid,
-            task_space_id=task_space,
+            task_space=_resume_task_space(sid, resume),
             surface=await self.detect_surface(),
         )
         if resume:
@@ -983,14 +1150,15 @@ __all__ = [
     "METADATA",
     "PLUGIN",
     "SLUG",
+    "TASK_SPACE_PREFIX",
     "EgoHelperError",
     "EgoLiteBackend",
     "EgoLiteSession",
     "EgoSurface",
     "HelperRun",
+    "TaskSpaceRef",
     "build_script",
     "locate_helper",
     "parse_envelope",
     "subprocess_path",
-    "task_space_id_for",
 ]

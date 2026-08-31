@@ -78,8 +78,10 @@ dev = [
   "pytest>=8.3",
   "pytest-asyncio>=0.25",
   "pytest-cov>=6.0",
+  "pyyaml>=6.0", # tests/test_workflows.py parses the CI/release workflows
   "respx>=0.22",
   "ruff>=0.8.4",
+  "types-pyyaml>=6.0",
 ]
 
 [build-system]

@@ -1,13 +1,17 @@
-# Continuous integration: the gate every change passes before release.yml is
-# allowed to publish an image. Three independent jobs run in parallel because
-# the Python API, the web UI and the container image fail for unrelated reasons
-# and a maintainer should see all three verdicts from a single push.
+# Continuous integration, and the only path to a release.
+#
+# Three validation jobs run in parallel because the Python API, the web UI and
+# the container image fail for unrelated reasons and a maintainer should see all
+# three verdicts from a single push. The `release` job at the bottom calls
+# release.yml and `needs` all three, which is what makes a failed check block
+# publishing instead of racing it.
 
 name: CI
 
 on:
   push:
     branches: ["main"]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -133,3 +137,28 @@ jobs:
       # mid-deploy. `config` resolves every interpolation with no .env present.
       - name: Validate deployable stack file
         run: docker compose -f docker-compose.yml config
+
+  # -------------------------------------------------------------------------
+  # Release
+  # -------------------------------------------------------------------------
+  # The gate. `needs` lists every validation job, so GitHub will not start this
+  # job -- and therefore cannot publish an image -- unless all of them
+  # succeeded. Pull requests are excluded because a fork must never be able to
+  # push to the registry, and only main and v* tags are publishable refs.
+  #
+  # release.yml is called rather than triggered on its own event, so there is no
+  # second, ungated path to publishing. tests/test_workflows.py asserts both
+  # halves of that: the `needs` list here, and the absence of a `push` trigger
+  # there.
+  release:
+    name: Release
+    needs: [python, web, docker]
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/release.yml
+    with:
+      push: true

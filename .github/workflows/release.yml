@@ -10,14 +10,30 @@
 # Multi-arch (amd64 + arm64) is not a nicety either: the target audience runs
 # this on both x86 home servers and Apple Silicon / Raspberry Pi hosts, and a
 # single-arch image would fail to pull on half of them.
+#
+# RELEASE GATING. This workflow has NO `push` trigger. It is `workflow_call`
+# only, invoked by ci.yml from a job that `needs` every validation job. That is
+# the whole mechanism behind the invariant "a commit that fails CI cannot
+# publish a release image": there is no event path that reaches this file
+# without the lint, type, import-contract, test, web and Docker jobs having
+# succeeded first. Adding a `push:` trigger here would silently break it, which
+# is why tests/test_workflows.py asserts its absence.
+#
+# Being called rather than triggered also keeps `github.ref` pointing at the
+# real ref (a branch on merge, a tag on release), so docker/metadata-action's
+# `is_default_branch` and semver patterns keep working unchanged. A
+# `workflow_run` trigger would have replaced that context with the default
+# branch and required every tag to be resolved by hand.
 
 name: Release
 
 on:
-  push:
-    branches: ["main"]
-    tags: ["v*"]
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      push:
+        description: "Push the built image. False builds only, for verification."
+        type: boolean
+        default: true
 
 concurrency:
   group: release-${{ github.ref }}
@@ -48,6 +64,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: inputs.push
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -76,7 +93,7 @@ jobs:
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          push: true
+          push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # Shared with CI's docker job, so a merge usually reuses the layers

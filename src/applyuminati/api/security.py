@@ -147,7 +147,15 @@ def _origin_allowed(request: Request, settings: Settings) -> bool:
 
 
 class AuthenticationMiddleware(BaseHTTPMiddleware):
-    """Fail-closed session enforcement for everything under ``/api``."""
+    """Fail-closed session enforcement for everything under ``/api``.
+
+    WebSocket connections never reach :meth:`dispatch`: ``BaseHTTPMiddleware``
+    passes non-HTTP scopes straight through. That is correct here rather than a
+    gap, because a Browser Host has no session and no browser to hold a cookie.
+    The one WebSocket route authenticates itself with a machine credential in its
+    first frame and can do nothing before that succeeds. See
+    :mod:`applyuminati.api.routers.browser_hosts`.
+    """
 
     def __init__(self, app: ASGIApp, settings: Settings) -> None:
         super().__init__(app)

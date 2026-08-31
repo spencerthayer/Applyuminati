@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from applyuminati.core.clock import utcnow
 from applyuminati.core.ids import new_ulid
-from applyuminati.core.registry import HealthReport, PluginDescriptor, Registry
+from applyuminati.core.registry import HealthReport, PluginDescriptor, PluginMaturity, Registry
 from applyuminati.core.settings import ProviderConfig
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
@@ -239,6 +239,7 @@ def llm_plugin(
     capabilities: frozenset[LLMCapability],
     description: str = "",
     priority: int = 0,
+    maturity: PluginMaturity = PluginMaturity.ADAPTER_EXISTS,
 ) -> PluginDescriptor[LLMProvider]:
     return PluginDescriptor[LLMProvider](
         slug=slug,
@@ -249,6 +250,7 @@ def llm_plugin(
         capabilities=frozenset(c.value for c in capabilities),
         requires_auth=LLMCapability.LOCAL not in capabilities,
         priority=priority,
+        maturity=maturity,
     )
 
 

@@ -5,6 +5,8 @@ unit of work in the services layer, never inside a repository method.
 """
 
 from applyuminati.db.repositories.applications import ApplicationRepository
+from applyuminati.db.repositories.attempts import AttemptRepository
+from applyuminati.db.repositories.browser_hosts import BrowserHostRepository, PairedHost
 from applyuminati.db.repositories.jobs import JobRepository
 from applyuminati.db.repositories.llm_calls import LLMCallRepository
 from applyuminati.db.repositories.memory import MemoryRepository
@@ -17,9 +19,12 @@ from applyuminati.db.repositories.tasks import TaskRepository
 
 __all__ = [
     "ApplicationRepository",
+    "AttemptRepository",
+    "BrowserHostRepository",
     "JobRepository",
     "LLMCallRepository",
     "MemoryRepository",
+    "PairedHost",
     "ProfileRepository",
     "ResearchRepository",
     "RunRepository",

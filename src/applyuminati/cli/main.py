@@ -17,7 +17,12 @@ from rich.console import Console
 from rich.table import Table
 
 from applyuminati import __version__
+from applyuminati.browser.host_protocol import PROTOCOL_VERSION, WEBSOCKET_PATH
+from applyuminati.core.models.browser_host import HostConnectionState
+from applyuminati.core.registry import PluginMaturity
+from applyuminati.core.security import WeakPasswordError, hash_password
 from applyuminati.core.settings import get_settings
+from applyuminati.services.capabilities import collect_capability_matrix
 from applyuminati.services.container import ServiceContainer, get_container
 
 app = typer.Typer(
@@ -155,8 +160,6 @@ def auth_hash_password(
     process environment or the compose file: a shared host, a NAS, a machine with
     other users. The hash verifies logins and cannot be replayed as the password.
     """
-    from applyuminati.core.security import WeakPasswordError, hash_password
-
     try:
         encoded = hash_password(password)
     except WeakPasswordError as exc:
@@ -191,6 +194,107 @@ def auth_status() -> None:
             "[yellow]The API will refuse every request except health and login "
             "until a password is set. Run: applyuminati auth hash-password[/yellow]"
         )
+
+
+# -- browser hosts --------------------------------------------------------
+
+
+host_app = typer.Typer(help="Pair and manage Browser Hosts.")
+app.add_typer(host_app, name="browser-host")
+
+
+@host_app.command("pair")
+def browser_host_pair(
+    host_id: str = typer.Argument(..., help="Stable id the host will identify itself by."),
+    display_name: str | None = typer.Option(None, help="Label shown in the UI."),
+    server_url: str = typer.Option(
+        "http://127.0.0.1:8000", help="Where the host should connect back to."
+    ),
+) -> None:
+    """Mint a pairing credential for a Browser Host.
+
+    The credential is printed once and only the hash is stored, so a copy of the
+    database does not let anyone drive the user's browser. Losing it means
+    running this command again, which rotates the credential and invalidates the
+    old one.
+    """
+    container = _container()
+
+    async def _pair() -> tuple[str, str]:
+        async with container.repositories() as repos:
+            paired = await repos.browser_hosts.pair(host_id=host_id, display_name=display_name)
+            return paired.record.host_id, paired.secret
+
+    paired_id, secret = _run_async(_pair())
+    websocket = server_url.rstrip("/").replace("https://", "wss://").replace("http://", "ws://")
+    console.print(f"\n[green]Paired {paired_id}.[/green]")
+    console.print("[yellow]This credential is shown once and cannot be recovered.[/yellow]\n")
+    console.print("Run on the machine with the browser:\n")
+    console.print(
+        f"  APPLYUMINATI_HOST_CREDENTIAL='{secret}' \\\n"
+        f"    applyuminati-browser-host run --server {websocket}{WEBSOCKET_PATH} \\\n"
+        f"    --host-id {paired_id}\n"
+    )
+    console.print(f"[dim]Protocol version {PROTOCOL_VERSION}[/dim]")
+
+
+@host_app.command("list")
+def browser_host_list() -> None:
+    """List paired Browser Hosts and what each can do."""
+    container = _container()
+
+    async def _list() -> list[Any]:
+        async with container.read_repositories() as repos:
+            return await repos.browser_hosts.list()
+
+    records = _run_async(_list())
+    if not records:
+        console.print("No Browser Hosts paired. Run: applyuminati browser-host pair <id>")
+        return
+    table = Table(title="Browser Hosts")
+    table.add_column("Host")
+    table.add_column("Platform")
+    table.add_column("State")
+    table.add_column("Backends")
+    table.add_column("Last seen")
+    for record in records:
+        # The stored state is a cache of what a previous process knew. This
+        # command runs outside the server, so it cannot see live connections and
+        # must not claim one.
+        state = (
+            "disconnected" if record.state is HostConnectionState.CONNECTED else record.state.value
+        )
+        backends = ", ".join(b.slug for b in record.available_backends()) or "—"
+        table.add_row(
+            record.display_name or record.host_id,
+            record.platform or "—",
+            state,
+            backends,
+            record.last_seen_at.strftime("%Y-%m-%d %H:%M") if record.last_seen_at else "never",
+        )
+    console.print(table)
+
+
+@host_app.command("revoke")
+def browser_host_revoke(
+    host_id: str = typer.Argument(..., help="Host whose credential should stop working."),
+) -> None:
+    """Withdraw a Browser Host's credential.
+
+    The record is kept so the revocation is auditable and a host that reappears
+    is identified as revoked rather than as unknown.
+    """
+    container = _container()
+
+    async def _revoke() -> bool:
+        async with container.repositories() as repos:
+            return await repos.browser_hosts.revoke(host_id) is not None
+
+    if _run_async(_revoke()):
+        console.print(f"[green]Revoked {host_id}. It can no longer connect.[/green]")
+    else:
+        console.print(f"[red]No Browser Host called {host_id!r}.[/red]")
+        raise typer.Exit(code=1)
 
 
 # -- profile --------------------------------------------------------------
@@ -410,6 +514,37 @@ def jobs_score(
                 console.print(f"  {failure}")
 
     _run_async(_score())
+
+
+# -- capabilities ---------------------------------------------------------
+
+
+@app.command()
+def capabilities() -> None:
+    """Print the plugin capability and maturity matrix.
+
+    Generated from the live registries so a README table cannot drift. Nothing
+    in this tree claims production_tested: that requires a human run against a
+    live employer flow.
+    """
+    rows = collect_capability_matrix()
+    table = Table(title="Capability matrix")
+    table.add_column("Kind")
+    table.add_column("Slug")
+    table.add_column("Maturity")
+    table.add_column("Capabilities")
+    for row in rows:
+        table.add_row(
+            row.kind,
+            row.slug,
+            row.maturity.value,
+            ", ".join(row.capabilities) or "—",
+        )
+    console.print(table)
+    claimed = [row for row in rows if row.maturity is PluginMaturity.PRODUCTION_TESTED]
+    if claimed:
+        console.print("[red]production_tested is reserved for a live employer run.[/red]")
+        raise typer.Exit(code=1)
 
 
 # -- status ---------------------------------------------------------------

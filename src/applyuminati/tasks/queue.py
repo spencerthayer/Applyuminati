@@ -95,13 +95,13 @@ class TaskQueue:
             available_strategies=available_strategies or [],
         )
 
-        if decision.is_terminal:
-            task.state = TaskState.FAILED
+        if decision.action is TaskState.BLOCKED:
+            task.state = TaskState.BLOCKED
             task.finished_at = utcnow()
             task.failure_category = error.category
             task.failure_message = error.message
-        elif decision.action == "blocked":
-            task.state = TaskState.BLOCKED
+        elif decision.action is TaskState.FAILED:
+            task.state = TaskState.FAILED
             task.finished_at = utcnow()
             task.failure_category = error.category
             task.failure_message = error.message
@@ -117,6 +117,21 @@ class TaskQueue:
         task.state = TaskState.BLOCKED
         task.failure_message = message
         task.finished_at = utcnow()
+        return await self._repo.save(task)
+
+    async def requeue(self, task: TaskRecord) -> TaskRecord:
+        """Return a blocked task to the queue after a human acted.
+
+        WAITING_FOR_HUMAN is not a failure, so this is not a retry: attempt
+        count is unchanged and resume_state is kept.
+        """
+        task.state = TaskState.PENDING
+        task.finished_at = None
+        task.failure_category = None
+        task.failure_message = None
+        task.scheduled_for = utcnow()
+        task.lease_expires_at = None
+        task.updated_at = utcnow()
         return await self._repo.save(task)
 
     async def reclaim_expired(self) -> int:

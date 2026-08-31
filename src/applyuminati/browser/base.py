@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from applyuminati.core.clock import utcnow
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.models.questionnaire import ApplicationQuestion
-from applyuminati.core.registry import HealthReport, PluginDescriptor, Registry
+from applyuminati.core.registry import HealthReport, PluginDescriptor, PluginMaturity, Registry
 
 
 class BrowserCapability(StrEnum):
@@ -338,6 +338,7 @@ def browser_plugin(
     capabilities: frozenset[BrowserCapability],
     description: str = "",
     priority: int = 0,
+    maturity: PluginMaturity = PluginMaturity.ADAPTER_EXISTS,
 ) -> PluginDescriptor[BrowserBackend]:
     return PluginDescriptor[BrowserBackend](
         slug=slug,
@@ -347,6 +348,7 @@ def browser_plugin(
         description=description,
         capabilities=frozenset(c.value for c in capabilities),
         priority=priority,
+        maturity=maturity,
     )
 
 

@@ -154,6 +154,21 @@ class ApplicationQuestion(BaseModel):
             object.__setattr__(self, "sensitivity", classify_sensitivity(self.text))
 
 
+class AnswerAuthority(StrEnum):
+    """How far automation may go for a question category.
+
+    Generated wording never becomes a verified fact, regardless of policy.
+    A submitted answer keeps the assertion level it arrived with.
+    """
+
+    ALWAYS_ANSWER = "always_answer"
+    ANSWER_IF_VERIFIED = "answer_if_verified"
+    REUSE_APPROVED = "reuse_approved"
+    DECLINE_IF_OPTIONAL = "decline_if_optional"
+    REQUIRE_REVIEW = "require_review"
+    NEVER_ANSWER = "never_answer"
+
+
 class AnswerStatus(StrEnum):
     #: Grounded in evidence and ready to submit.
     READY = "ready"
@@ -200,6 +215,7 @@ class AnswerDraft(BaseModel):
 
 __all__ = [
     "REVIEW_REQUIRED_CLASSES",
+    "AnswerAuthority",
     "AnswerDraft",
     "AnswerStatus",
     "ApplicationQuestion",

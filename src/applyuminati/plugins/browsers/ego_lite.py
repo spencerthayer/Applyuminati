@@ -64,7 +64,7 @@ from applyuminati.core.clock import utcnow
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.logging import get_logger
 from applyuminati.core.platform import current_platform
-from applyuminati.core.registry import HealthReport, HealthState
+from applyuminati.core.registry import HealthReport, HealthState, PluginMaturity
 from applyuminati.core.settings import Settings
 from applyuminati.plugins.browsers import (
     CONTROL_SCAN_CALL_LITERAL,
@@ -1143,6 +1143,7 @@ PLUGIN = browser_plugin(
         "the user's real logins; preferred for authenticated ATS portals."
     ),
     priority=100,
+    maturity=PluginMaturity.WORKFLOW_INTEGRATED,
 )
 
 __all__ = [

@@ -32,6 +32,23 @@ from applyuminati.core.errors import ConfigurationError
 T = TypeVar("T")
 
 
+class PluginMaturity(StrEnum):
+    """How far a plugin has actually been exercised.
+
+    A registered entry point and a capability tested end to end look identical
+    in a feature table. Conflating them is how a README promises something
+    nobody has run. ``applyuminati capabilities`` prints this field, and tests
+    refuse ``production_tested`` until a human has run the plugin against a
+    live employer flow.
+    """
+
+    CONTRACT_ONLY = "contract_only"
+    ADAPTER_EXISTS = "adapter_exists"
+    HEALTH_PROBE_WORKING = "health_probe_working"
+    WORKFLOW_INTEGRATED = "workflow_integrated"
+    PRODUCTION_TESTED = "production_tested"
+
+
 class HealthState(StrEnum):
     """Availability of a backend, reported uniformly across plugin kinds."""
 
@@ -92,6 +109,9 @@ class PluginDescriptor(Generic[T]):
     priority: int = 0
     #: Where the plugin came from: ``builtin`` or an entry-point distribution.
     origin: str = "builtin"
+    #: How far this plugin has been exercised. Never ``production_tested``
+    #: until a human has run it against a live employer flow.
+    maturity: PluginMaturity = PluginMaturity.ADAPTER_EXISTS
 
     def create(self, **kwargs: Any) -> T:
         return self.factory(**kwargs)
@@ -242,5 +262,6 @@ __all__ = [
     "HealthState",
     "LoadError",
     "PluginDescriptor",
+    "PluginMaturity",
     "Registry",
 ]

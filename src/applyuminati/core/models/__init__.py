@@ -4,6 +4,14 @@ Pure Pydantic v2. No persistence, no HTTP, no vendor SDKs — this package is
 importable from anywhere and depends on nothing but :mod:`applyuminati.core`.
 """
 
+from applyuminati.core.models.browser_host import BrowserHostRecord, HostConnectionState
+from applyuminati.core.models.execution import (
+    ApplicationAttempt,
+    HumanIntervention,
+    InterventionReason,
+    InterventionResolution,
+    WorkflowState,
+)
 from applyuminati.core.models.application import (
     ActorKind,
     Application,
@@ -58,6 +66,7 @@ from applyuminati.core.models.profile import (
     WritingStyle,
 )
 from applyuminati.core.models.questionnaire import (
+    AnswerAuthority,
     AnswerDraft,
     AnswerStatus,
     ApplicationQuestion,
@@ -88,13 +97,21 @@ from applyuminati.core.models.task import (
 
 __all__ = [
     "ActorKind",
+    "AnswerAuthority",
     "AnswerDraft",
     "AnswerStatus",
     "Application",
     "ApplicationArtifact",
+    "ApplicationAttempt",
     "ApplicationEvent",
     "ApplicationQuestion",
     "ApplicationState",
+    "BrowserHostRecord",
+    "HostConnectionState",
+    "HumanIntervention",
+    "InterventionReason",
+    "InterventionResolution",
+    "WorkflowState",
     "ApprovalSignal",
     "AtsVendor",
     "CareerProfile",

@@ -30,10 +30,13 @@ import type {
   DashboardResponse,
   DiscoverRequest,
   HealthResponse,
+  InboxEntry,
   JobDetail,
   JobSummary,
   Page,
   ProfileImportRequest,
+  ResolveInboxRequest,
+  ResolveInboxResponse,
   ProfileImportResponse,
   ProfileResponse,
   Recommendation,
@@ -96,6 +99,7 @@ export const queryKeys = {
   applicationList: (filters: ApplicationFilters) => ["applications", "list", filters] as const,
   application: (applicationId: string) => ["applications", "detail", applicationId] as const,
   settings: ["settings"] as const,
+  inbox: ["needs-you"] as const,
 };
 
 // ---------------------------------------------------------------------------
@@ -403,6 +407,36 @@ export function useTransitionApplication(): UseMutationResult<
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
+
+export function useInbox(): UseQueryResult<InboxEntry[], ApiError> {
+  return useQuery<InboxEntry[], ApiError>({
+    queryKey: queryKeys.inbox,
+    queryFn: ({ signal }) => get<InboxEntry[]>("/needs-you", undefined, signal),
+    refetchInterval: 15_000,
+  });
+}
+
+export function useResolveInbox(): UseMutationResult<
+  ResolveInboxResponse,
+  ApiError,
+  { attemptId: string; interventionId: string; body: ResolveInboxRequest }
+> {
+  const client = useQueryClient();
+  return useMutation<
+    ResolveInboxResponse,
+    ApiError,
+    { attemptId: string; interventionId: string; body: ResolveInboxRequest }
+  >({
+    mutationFn: ({ attemptId, interventionId, body }) =>
+      post<ResolveInboxResponse>(`/needs-you/${attemptId}/${interventionId}`, body),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.inbox }),
+        client.invalidateQueries({ queryKey: queryKeys.dashboard }),
+      ]);
+    },
+  });
+}
 
 export function useSettings(): UseQueryResult<SettingsResponse, ApiError> {
   return useQuery<SettingsResponse, ApiError>({

@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from applyuminati.core.errors import ApplyuminatiError, FailureCategory
 from applyuminati.core.models.common import EmploymentType, Location, RemoteMode
 from applyuminati.core.models.job import AtsVendor, Job, SourceTier, VerificationState
-from applyuminati.core.registry import HealthReport, HealthState
+from applyuminati.core.registry import HealthReport, HealthState, PluginMaturity
 from applyuminati.core.settings import Settings
 from applyuminati.sources.base import (
     DiscoveryRequest,
@@ -190,4 +190,5 @@ PLUGIN = source_plugin(
     capabilities=_CAPABILITIES,
     options_schema=GreenhouseOptions,
     priority=10,
+    maturity=PluginMaturity.WORKFLOW_INTEGRATED,
 )

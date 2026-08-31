@@ -11,7 +11,7 @@ never imports them.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -39,6 +39,7 @@ __all__ = [
     "DriverMetadata",
     "DriverOutcome",
     "DriverOutcomeKind",
+    "PersistAttempt",
     "application_driver",
     "detect_driver",
 ]
@@ -71,6 +72,10 @@ class DriverMetadata:
     hosts: frozenset[str] = field(default_factory=frozenset)
 
 
+#: Persist an attempt without the applications layer knowing about repositories.
+PersistAttempt = Callable[[ApplicationAttempt], Awaitable[None]]
+
+
 @dataclass(slots=True)
 class DriverContext:
     """Everything a driver may read. Nothing it may write except through attempt."""
@@ -80,6 +85,9 @@ class DriverContext:
     mode: ExecutionMode
     documents: dict[str, Path] = field(default_factory=dict)
     observation: PageObservation | None = None
+    #: Service-owned save. Used to make ``submission_attempted_at`` durable
+    #: before a consequential browser command.
+    persist: PersistAttempt | None = None
 
 
 class DriverError(ApplyuminatiError):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from applyuminati.applications.detect import detect_ats, detect_job
@@ -28,9 +29,11 @@ from applyuminati.core.models.profile import CareerProfile, QuestionnaireDefault
 from applyuminati.core.models.questionnaire import ApplicationQuestion, QuestionKind
 from applyuminati.core.provenance import AssertionLevel
 from applyuminati.core.settings import ExecutionMode
+from applyuminati.db.repositories.attempts import AttemptRepository
 from applyuminati.plugins.applications import register_application_drivers
 from applyuminati.plugins.applications.greenhouse import GreenhouseDriver
 from applyuminati.plugins.applications.lever import LeverDriver
+from applyuminati.services.container import Repositories
 from applyuminati.sources.normalize import build_job
 
 
@@ -41,6 +44,7 @@ class FakeSession:
         self._pages = pages
         self._url = start or next(iter(pages))
         self.clicks: list[str] = []
+        self.idempotency_keys: list[str | None] = []
 
     @property
     def owner(self) -> ControlOwner:
@@ -68,8 +72,15 @@ class FakeSession:
     async def upload_file(self, locator: str, path: Path) -> ActionResult:
         return ActionResult(ok=True, action="upload")
 
-    async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
         self.clicks.append(locator)
+        self.idempotency_keys.append(idempotency_key)
         thanks = next(
             (page for page in self._pages.values() if "thank" in (page.text or "").lower()), None
         )
@@ -323,6 +334,7 @@ async def test_uncertain_evidence_after_click_opens_user_review() -> None:
         for checkpoint in attempt.checkpoints
     )
     assert session.clicks == ["submit"]
+    assert session.idempotency_keys == [f"application-attempt:{attempt.id}:submit"]
 
 
 async def test_uncertain_evidence_on_restart_does_not_click_again() -> None:
@@ -385,3 +397,113 @@ async def test_likely_evidence_is_enough_to_complete() -> None:
         checkpoint.kind == CheckpointKind.SUBMISSION_CONFIRMED.value
         for checkpoint in attempt.checkpoints
     )
+    assert session.idempotency_keys == [f"application-attempt:{attempt.id}:submit"]
+
+
+class _CrashAfterClick(FakeSession):
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
+        await super().click(locator, label=label, idempotency_key=idempotency_key)
+        msg = "process crashed after submit"
+        raise RuntimeError(msg)
+
+
+async def test_submission_attempted_is_committed_before_the_click(database) -> None:
+    apply_url = "https://boards.greenhouse.io/acme/jobs/1"
+    form = _greenhouse_form(apply_url)
+    job = build_job(
+        source="greenhouse",
+        tier=SourceTier.DIRECT_ATS,
+        source_job_id="1",
+        url=apply_url,
+        title="Engineer",
+        company="Acme",
+    )
+    attempt = ApplicationAttempt(application_id="a", job_id=job.id, driver="greenhouse")
+
+    class _CheckingSession(FakeSession):
+        async def click(
+            self,
+            locator: str,
+            *,
+            label: str | None = None,
+            idempotency_key: str | None = None,
+        ) -> ActionResult:
+            async with database.session() as other:
+                loaded = await AttemptRepository(other).get(attempt.id)
+            assert loaded is not None
+            assert loaded.submission_attempted_at is not None
+            return await super().click(locator, label=label, idempotency_key=idempotency_key)
+
+    session = _CheckingSession({apply_url: form})
+    async with database.session() as db_session:
+        repos = Repositories.bind(db_session)
+        await repos.attempts.save(attempt)
+
+        async def persist(current: ApplicationAttempt) -> None:
+            await repos.attempts.save(current)
+            await db_session.commit()
+
+        await GreenhouseDriver().run(
+            attempt,
+            session,
+            DriverContext(
+                job=job,
+                profile=CareerProfile(),
+                mode=ExecutionMode.AUTONOMOUS_SUBMIT,
+                persist=persist,
+            ),
+        )
+    assert session.clicks == ["submit"]
+
+
+async def test_crash_after_click_does_not_submit_again_on_restart(database) -> None:
+    apply_url = "https://boards.greenhouse.io/acme/jobs/1"
+    form = _greenhouse_form(apply_url)
+    job = build_job(
+        source="greenhouse",
+        tier=SourceTier.DIRECT_ATS,
+        source_job_id="1",
+        url=apply_url,
+        title="Engineer",
+        company="Acme",
+    )
+    attempt = ApplicationAttempt(application_id="a", job_id=job.id, driver="greenhouse")
+    crashing = _CrashAfterClick({apply_url: form})
+    async with database.session() as db_session:
+        repos = Repositories.bind(db_session)
+        await repos.attempts.save(attempt)
+
+        async def persist(current: ApplicationAttempt) -> None:
+            await repos.attempts.save(current)
+            await db_session.commit()
+
+        with contextlib.suppress(RuntimeError):
+            await GreenhouseDriver().run(
+                attempt,
+                crashing,
+                DriverContext(
+                    job=job,
+                    profile=CareerProfile(),
+                    mode=ExecutionMode.AUTONOMOUS_SUBMIT,
+                    persist=persist,
+                ),
+            )
+    assert crashing.clicks == ["submit"]
+    async with database.session() as other:
+        restarted = await AttemptRepository(other).get(attempt.id)
+    assert restarted is not None
+    assert restarted.submission_attempted_at is not None
+    replay = FakeSession({apply_url: form})
+    outcome = await GreenhouseDriver().run(
+        restarted,
+        replay,
+        DriverContext(job=job, profile=CareerProfile(), mode=ExecutionMode.AUTONOMOUS_SUBMIT),
+    )
+    assert replay.clicks == []
+    assert outcome.kind is DriverOutcomeKind.WAITING_FOR_HUMAN

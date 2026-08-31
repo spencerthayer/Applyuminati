@@ -42,8 +42,10 @@ __all__ = [
     "handle_submission_evidence",
     "handoff_for",
     "mark_submission_attempted",
+    "persist_attempt",
     "record_observation",
     "run_form_application",
+    "submit_idempotency_key",
     "verify_submission",
 ]
 
@@ -191,6 +193,17 @@ def mark_submission_attempted(attempt: ApplicationAttempt) -> None:
     if attempt.submission_attempted_at is None:
         attempt.submission_attempted_at = utcnow()
         attempt.record_event(AttemptEventKind.SUBMITTED, "submission click is about to happen")
+
+
+def submit_idempotency_key(attempt: ApplicationAttempt) -> str:
+    """Stable key for the one final-submit click of this attempt."""
+    return f"application-attempt:{attempt.id}:submit"
+
+
+async def persist_attempt(attempt: ApplicationAttempt, context: DriverContext) -> None:
+    """Flush the attempt through the service-owned callback, if one exists."""
+    if context.persist is not None:
+        await context.persist(attempt)
 
 
 def verify_submission(observation: PageObservation) -> SubmissionEvidence:
@@ -355,7 +368,12 @@ async def run_form_application(
         return DriverOutcome(kind=DriverOutcomeKind.COMPLETED, attempt=attempt)
 
     mark_submission_attempted(attempt)
-    clicked = await session.click(submit.locator, label=submit.label)
+    await persist_attempt(attempt, context)
+    clicked = await session.click(
+        submit.locator,
+        label=submit.label,
+        idempotency_key=submit_idempotency_key(attempt),
+    )
     observation = await session.observe()
     record_observation(attempt, observation)
     if not clicked.ok:

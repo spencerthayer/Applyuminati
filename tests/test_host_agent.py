@@ -48,7 +48,14 @@ class _Session:
     async def fill_field(self, locator: str, value: str) -> ActionResult:
         return ActionResult(ok=True, action="fill")
 
-    async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
+        _ = (label, idempotency_key)
         return ActionResult(ok=True, action="click")
 
     async def select_option(self, locator: str, option: str) -> ActionResult:

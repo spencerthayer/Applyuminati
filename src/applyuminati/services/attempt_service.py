@@ -13,7 +13,7 @@ from typing import Any
 
 from applyuminati.applications.detect import detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcomeKind, detect_driver
-from applyuminati.browser.base import BrowserSession
+from applyuminati.browser.base import BrowserSession, ControlOwner
 from applyuminati.browser.host_manager import BrowserHostManager
 from applyuminati.browser.host_protocol import HostCommand
 from applyuminati.core.clock import utcnow
@@ -155,6 +155,11 @@ class AttemptService:
             )
         return items
 
+    async def persist(self, attempt: ApplicationAttempt) -> None:
+        """Commit the attempt so a crash cannot lose a pre-submit marker."""
+        await self._repos.attempts.save(attempt)
+        await self._repos.session.commit()
+
     async def resolve(
         self,
         attempt_id: str,
@@ -162,6 +167,7 @@ class AttemptService:
         resolution: InterventionResolution,
         *,
         payload: dict[str, Any] | None = None,
+        manager: BrowserHostManager | None = None,
     ) -> ApplicationAttempt:
         attempt = await self.get(attempt_id)
         intervention = next(
@@ -171,6 +177,8 @@ class AttemptService:
             raise NotFoundError(
                 f"intervention {intervention_id} not found", code="resource_gone.intervention"
             )
+        if not intervention.open and resolution is not InterventionResolution.KEEP_CONTROL:
+            return attempt
         if resolution is InterventionResolution.KEEP_CONTROL:
             # Leave the intervention open. Resolving it would drop the item
             # from the inbox while the user still has the browser.
@@ -204,17 +212,51 @@ class AttemptService:
                     draft.answer = str(payload["answer"])
                     draft.status = AnswerStatus.USER_PROVIDED
 
-        if intervention.open:
-            intervention.resolve(resolution, payload=payload)
-            attempt.workflow_state = WorkflowState.PENDING
-            attempt.record_event(
-                AttemptEventKind.RESUMED,
-                "user returned control",
-                resolution=resolution.value,
-            )
+        if not await self._reclaim_before_resume(attempt, intervention, manager):
             await self._repos.attempts.save(attempt)
+            return attempt
+        intervention.resolve(resolution, payload=payload)
+        attempt.workflow_state = WorkflowState.PENDING
+        attempt.record_event(
+            AttemptEventKind.RESUMED,
+            "user returned control",
+            resolution=resolution.value,
+        )
+        await self._repos.attempts.save(attempt)
         await self.enqueue_resume(attempt)
         return attempt
+
+    async def _reclaim_before_resume(
+        self,
+        attempt: ApplicationAttempt,
+        intervention: HumanIntervention,
+        manager: BrowserHostManager | None,
+    ) -> bool:
+        """Take the browser back before a worker may act. Failure stays paused."""
+        skip = (
+            not intervention.requires_browser_handoff
+            or manager is None
+            or not attempt.browser_host_id
+            or not manager.is_connected(attempt.browser_host_id)
+        )
+        if skip:
+            return True
+        session = await self.bind_session(attempt, manager=manager)
+        detail: str | None = None
+        if session is None:
+            detail = "could not attach the host session to reclaim control"
+        else:
+            result = await session.reclaim_control(confirmed_by_user=True)
+            if not result.ok:
+                detail = result.detail or "reclaim_control failed; user still has the browser"
+            else:
+                owner = await session.control_state()
+                if owner is not ControlOwner.AGENT:
+                    detail = "browser is still owned by the user after reclaim"
+        if detail is not None:
+            attempt.record_event(AttemptEventKind.INTERVENTION_RESOLVED, detail)
+            return False
+        return True
 
     async def enqueue_resume(self, attempt: ApplicationAttempt) -> None:
         """Queue exactly one resumable attempt task. Idempotent while pending."""
@@ -317,6 +359,8 @@ class AttemptService:
                 await self._repos.attempts.save(attempt)
                 return attempt
             selected, _detection = matched
+        if context.persist is None:
+            context.persist = self.persist
         outcome = await selected.run(attempt, session, context)
         if outcome.kind is DriverOutcomeKind.WAITING_FOR_HUMAN:
             attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN

@@ -122,10 +122,15 @@ async def resolve_inbox(
     intervention_id: str,
     request: ResolveRequest,
     repos: Repositories = Depends(get_repositories),
+    container: ServiceContainer = Depends(get_container_dep),
 ) -> ResolveResponse:
     try:
         attempt = await AttemptService(repos).resolve(
-            attempt_id, intervention_id, request.resolution, payload=request.payload
+            attempt_id,
+            intervention_id,
+            request.resolution,
+            payload=request.payload,
+            manager=container.browser_hosts,
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc

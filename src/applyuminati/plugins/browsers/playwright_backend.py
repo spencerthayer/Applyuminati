@@ -155,7 +155,14 @@ class PlaywrightSession(BrowserSession):
         except Exception as exc:
             return ActionResult(ok=False, action="upload", detail=str(exc))
 
-    async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
+        _ = idempotency_key
         try:
             await self._page.click(locator)
             return ActionResult(ok=True, action="click")

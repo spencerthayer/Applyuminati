@@ -14,7 +14,6 @@ from applyuminati.browser.base import (
 )
 from applyuminati.browser.host_manager import BrowserHostManager, HostCommandError
 from applyuminati.browser.host_protocol import HostCommand
-from applyuminati.core.ids import new_ulid
 
 __all__ = ["HostedBrowserSession"]
 
@@ -65,11 +64,17 @@ class HostedBrowserSession:
         payload = await self._ok(HostCommand.UPLOAD, {"locator": locator, "path": str(path)})
         return ActionResult.model_validate(payload)
 
-    async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
         payload = await self._ok(
             HostCommand.CLICK,
             {"locator": locator, "label": label},
-            idempotency_key=f"click:{self.session_id}:{locator}:{new_ulid()}",
+            idempotency_key=idempotency_key,
         )
         return ActionResult.model_validate(payload)
 

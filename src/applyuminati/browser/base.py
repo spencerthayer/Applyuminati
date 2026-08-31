@@ -258,7 +258,13 @@ class BrowserSession(Protocol):
         """Attach a local file. ``path`` must be absolute."""
         ...
 
-    async def click(self, locator: str, *, label: str | None = None) -> ActionResult: ...
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult: ...
 
     async def wait_for_navigation(
         self, *, timeout_seconds: float | None = None

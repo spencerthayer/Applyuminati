@@ -788,8 +788,15 @@ class EgoLiteSession:
             records=locator,
         )
 
-    async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
         """Click a control; ``label`` disambiguates repeated targets."""
+        _ = idempotency_key
         target = self._target(locator)
         options = f", {_js({'label': label})}" if label else ""
         return await self._act("click", _body_action(f"click({_js(target)}{options})"))

@@ -2,12 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from typing import Any, cast
 
 from applyuminati.applications.detect import detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcome, DriverOutcomeKind
 from applyuminati.browser.base import BrowserSession
 from applyuminati.browser.host_manager import BrowserHostManager, LiveHost
+from applyuminati.browser.host_protocol import (
+    BackendAdvertisement,
+    CommandMessage,
+    HostCommand,
+    HostErrorCode,
+    RegisterMessage,
+    ResultMessage,
+)
 from applyuminati.core.errors import FailureCategory, NeedsHumanError
 from applyuminati.core.logging import get_logger
 from applyuminati.core.models.browser_host import BrowserHostRecord
@@ -32,9 +42,43 @@ from applyuminati.services.attempt_tasks import (
     run_application_attempt,
 )
 from applyuminati.services.container import Repositories
+from applyuminati.services.hosted_session import HostedBrowserSession
 from applyuminati.sources.normalize import build_job
 from applyuminati.tasks.handlers import TaskContext
 from applyuminati.tasks.queue import TaskQueue
+
+HOST_ID = "spencers-mac"
+
+
+class FakeConnection:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send_text(self, payload: str) -> None:
+        self.sent.append(payload)
+
+    async def close(self, *, code: int = 1000, reason: str = "") -> None:
+        return None
+
+
+async def _attach(manager: BrowserHostManager) -> tuple[LiveHost, FakeConnection]:
+    connection = FakeConnection()
+    live = await manager.attach(
+        BrowserHostRecord(host_id=HOST_ID, credential_hash="x" * 64),
+        connection,
+        RegisterMessage.model_validate(
+            {
+                "seq": 1,
+                "host_id": HOST_ID,
+                "credential": "secret-value",
+                "platform": "darwin",
+                "backends": {
+                    "ego_lite": BackendAdvertisement(available=True, preferred=True),
+                },
+            }
+        ),
+    )
+    return live, connection
 
 
 def _job() -> Job:
@@ -120,6 +164,187 @@ async def test_done_continue_releases_the_pause(database) -> None:
         assert again.workflow_state is WorkflowState.PENDING
         queued_again = await repos.tasks.list()
         assert len([task for task in queued_again if task.kind == APPLICATION_ATTEMPT_KIND]) == 1
+
+
+async def test_repeated_resolution_after_task_completion_does_not_enqueue_again(database) -> None:
+    job = _job()
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        attempt.open_intervention(InterventionReason.MFA_REQUIRED, "Complete MFA")
+        await repos.attempts.save(attempt)
+        opened = attempt.pending_intervention
+        assert opened is not None
+        await service.resolve(attempt.id, opened.id, InterventionResolution.DONE_CONTINUE)
+        queue = TaskQueue(repos.tasks)
+        claimed = await queue.claim(kinds=[APPLICATION_ATTEMPT_KIND])
+        assert claimed is not None
+        await queue.complete(claimed, {"status": "waiting_for_human"})
+        await service.resolve(attempt.id, opened.id, InterventionResolution.DONE_CONTINUE)
+        remaining = [
+            task
+            for task in await repos.tasks.list()
+            if task.kind == APPLICATION_ATTEMPT_KIND and task.state is TaskState.PENDING
+        ]
+        assert remaining == []
+
+
+async def _answer_host(
+    manager: BrowserHostManager,
+    live: Any,
+    connection: FakeConnection,
+    *,
+    reclaim_ok: bool,
+) -> asyncio.Task[None]:
+    seen = 0
+    owner = "user"
+
+    async def pump() -> None:
+        nonlocal seen, owner
+        while True:
+            await asyncio.sleep(0)
+            if len(connection.sent) <= seen:
+                continue
+            sent = CommandMessage.model_validate_json(connection.sent[seen])
+            seen += 1
+            if sent.command is HostCommand.RECLAIM_CONTROL:
+                ok = reclaim_ok and bool(sent.params.get("confirmed_by_user"))
+                if ok:
+                    owner = "agent"
+                await manager.handle_result(
+                    live,
+                    ResultMessage(
+                        command_id=sent.id,
+                        ok=ok,
+                        result={"ok": ok, "action": "reclaim"} if ok else {},
+                        error_code=None if ok else HostErrorCode.USER_HAS_CONTROL,
+                        error_message=None if ok else "user still typing",
+                    ),
+                )
+            elif sent.command is HostCommand.CONTROL_STATE:
+                await manager.handle_result(
+                    live,
+                    ResultMessage(command_id=sent.id, ok=True, result={"owner": owner}),
+                )
+            else:
+                await manager.handle_result(
+                    live, ResultMessage(command_id=sent.id, ok=True, result={})
+                )
+
+    return asyncio.create_task(pump())
+
+
+async def test_done_continue_reclaims_browser_ownership_before_enqueue(database) -> None:
+    job = _job()
+    manager = BrowserHostManager()
+    live, connection = await _attach(manager)
+    live.open_sessions.add("s1")
+    pump = await _answer_host(manager, live, connection, reclaim_ok=True)
+    try:
+        async with database.session() as session:
+            await JobRepository(session).upsert(job)
+            repos = Repositories.bind(session)
+            service = AttemptService(repos)
+            attempt = await service.create(
+                application_id="app1",
+                job=job,
+                profile=None,
+                mode=ExecutionMode.FILL_NO_SUBMIT,
+                browser_host_id=HOST_ID,
+            )
+            attempt.browser_session_id = "s1"
+            attempt.open_intervention(InterventionReason.AUTHENTICATION_REQUIRED, "Sign in")
+            await repos.attempts.save(attempt)
+            opened = attempt.pending_intervention
+            assert opened is not None
+            resumed = await service.resolve(
+                attempt.id,
+                opened.id,
+                InterventionResolution.DONE_CONTINUE,
+                manager=manager,
+            )
+            assert resumed.workflow_state is WorkflowState.PENDING
+            assert resumed.pending_intervention is None
+            queued = [
+                task for task in await repos.tasks.list() if task.kind == APPLICATION_ATTEMPT_KIND
+            ]
+            assert len(queued) == 1
+            frames = [CommandMessage.model_validate_json(frame) for frame in connection.sent]
+            commands = [frame.command for frame in frames]
+            assert HostCommand.RECLAIM_CONTROL in commands
+            assert HostCommand.CONTROL_STATE in commands
+            assert commands.index(HostCommand.RECLAIM_CONTROL) < commands.index(
+                HostCommand.CONTROL_STATE
+            )
+            reclaim = next(
+                frame for frame in frames if frame.command is HostCommand.RECLAIM_CONTROL
+            )
+            assert reclaim.params.get("confirmed_by_user") is True
+    finally:
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
+
+
+async def test_failed_reclaim_keeps_the_intervention_open(database) -> None:
+    job = _job()
+    manager = BrowserHostManager()
+    live, connection = await _attach(manager)
+    live.open_sessions.add("s1")
+    pump = await _answer_host(manager, live, connection, reclaim_ok=False)
+    try:
+        async with database.session() as session:
+            await JobRepository(session).upsert(job)
+            repos = Repositories.bind(session)
+            service = AttemptService(repos)
+            attempt = await service.create(
+                application_id="app1",
+                job=job,
+                profile=None,
+                mode=ExecutionMode.FILL_NO_SUBMIT,
+                browser_host_id=HOST_ID,
+            )
+            attempt.browser_session_id = "s1"
+            attempt.open_intervention(InterventionReason.AUTHENTICATION_REQUIRED, "Sign in")
+            await repos.attempts.save(attempt)
+            opened = attempt.pending_intervention
+            assert opened is not None
+            kept = await service.resolve(
+                attempt.id,
+                opened.id,
+                InterventionResolution.DONE_CONTINUE,
+                manager=manager,
+            )
+            assert kept.workflow_state is WorkflowState.WAITING_FOR_HUMAN
+            assert kept.pending_intervention is not None
+            queued = [
+                task for task in await repos.tasks.list() if task.kind == APPLICATION_ATTEMPT_KIND
+            ]
+            assert queued == []
+    finally:
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
+
+
+async def test_hosted_click_uses_the_caller_idempotency_key() -> None:
+    class _Recorder:
+        def __init__(self) -> None:
+            self.keys: list[str | None] = []
+
+        async def dispatch(self, *_args: Any, idempotency_key: str | None = None, **_kwargs: Any):
+            self.keys.append(idempotency_key)
+            return ResultMessage(command_id="c1", ok=True, result={"ok": True, "action": "click"})
+
+    recorder = _Recorder()
+    hosted = HostedBrowserSession(cast(Any, recorder), HOST_ID, "s1")
+    await hosted.click("submit", idempotency_key="application-attempt:att1:submit")
+    await hosted.click("submit")
+    assert recorder.keys == ["application-attempt:att1:submit", None]
 
 
 async def test_skip_cancels_the_attempt(database) -> None:

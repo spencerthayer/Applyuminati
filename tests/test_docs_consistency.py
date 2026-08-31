@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from applyuminati.core.models.application import ApplicationState, TRANSITIONS
+from applyuminati.core.models.application import TRANSITIONS, ApplicationState
 from applyuminati.core.models.execution import WorkflowState
 from applyuminati.core.registry import PluginMaturity
 from applyuminati.services.capabilities import collect_capability_matrix

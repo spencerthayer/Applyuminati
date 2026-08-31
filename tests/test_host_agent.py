@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from applyuminati.browser.base import ActionResult, BrowserCheckpoint, ControlOwner, PageObservation
+from applyuminati.browser.base import (
+    ActionResult,
+    BrowserCheckpoint,
+    ControlOwner,
+    ElementRole,
+    PageElement,
+    PageObservation,
+)
 from applyuminati.browser.host_protocol import CommandMessage, HostCommand, HostErrorCode
 from applyuminati.core.errors import ConfigurationError
 from applyuminati.host.dispatcher import CommandDispatcher, HostSession
@@ -25,6 +32,12 @@ class _Session:
 
     async def observe(self, *, include_text: bool = True) -> PageObservation:
         return PageObservation(url="https://example.com")
+
+    async def find_controls(self, *, role: ElementRole | None = None) -> list[PageElement]:
+        return []
+
+    async def wait_for_control(self, *, timeout_seconds: float) -> ActionResult:
+        return ActionResult(ok=True, action="wait")
 
     async def fill_field(self, locator: str, value: str) -> ActionResult:
         return ActionResult(ok=True, action="fill")
@@ -105,7 +118,9 @@ async def test_expired_commands_are_not_executed(tmp_path: Path) -> None:
     dispatcher = CommandDispatcher(documents_dir=tmp_path, capabilities=frozenset())
     result = await dispatcher.execute(
         HostSession(_Session(), "playwright"),
-        CommandMessage(command=HostCommand.CLICK, session_id="s1", expires_at=0, params={"locator": "x"}),
+        CommandMessage(
+            command=HostCommand.CLICK, session_id="s1", expires_at=0, params={"locator": "x"}
+        ),
     )
     assert result.error_code is HostErrorCode.EXPIRED
 
@@ -131,5 +146,6 @@ async def test_consequential_click_is_deduplicated(tmp_path: Path) -> None:
             idempotency_key="submit-1",
         ),
     )
-    assert first.ok and second.ok
+    assert first.ok
+    assert second.ok
     assert second.deduplicated is True

@@ -28,7 +28,7 @@ def test_verified_work_authorization_is_answered() -> None:
         provenance=[Provenance(kind=ProvenanceKind.USER_INPUT, origin="profile")],
     )
     default = QuestionnaireDefault(
-        key="legally_authorized_to_work_in_the_united",
+        key="legally_authorized_to_work_in_united_states",
         question_text="Are you legally authorized to work in the United States?",
         answer="Yes",
         level=AssertionLevel.VERIFIED,
@@ -72,7 +72,7 @@ def test_legal_attestation_always_stops() -> None:
 
 def test_generated_suggestion_does_not_become_a_fact() -> None:
     default = QuestionnaireDefault(
-        key="years_of_experience_python",
+        key="years_of_python_experience",
         question_text="Years of Python experience?",
         answer="12",
         level=AssertionLevel.MODEL_SUGGESTION,
@@ -97,7 +97,7 @@ def test_missing_verified_fact_is_not_fabricated() -> None:
 
 def test_never_answer_proposes_no_wording() -> None:
     default = QuestionnaireDefault(
-        key="years_of_experience_python",
+        key="years_of_python_experience",
         question_text="Years of Python experience?",
         answer="12",
         level=AssertionLevel.VERIFIED,

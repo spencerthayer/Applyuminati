@@ -115,7 +115,9 @@ class AttemptRepository:
         rows = (
             await self._session.scalars(
                 select(ApplicationAttemptRow)
-                .where(ApplicationAttemptRow.workflow_state == WorkflowState.WAITING_FOR_HUMAN.value)
+                .where(
+                    ApplicationAttemptRow.workflow_state == WorkflowState.WAITING_FOR_HUMAN.value
+                )
                 .order_by(ApplicationAttemptRow.updated_at.desc())
             )
         ).all()

@@ -57,7 +57,9 @@ def upgrade() -> None:
     with op.batch_alter_table("application_attempts", schema=None) as batch_op:
         batch_op.create_index("ix_attempts_application", ["application_id", "updated_at"])
         batch_op.create_index("ix_attempts_workflow_state", ["workflow_state", "updated_at"])
-        batch_op.create_index(batch_op.f("ix_application_attempts_application_id"), ["application_id"])
+        batch_op.create_index(
+            batch_op.f("ix_application_attempts_application_id"), ["application_id"]
+        )
         batch_op.create_index(batch_op.f("ix_application_attempts_job_id"), ["job_id"])
 
 

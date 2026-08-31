@@ -168,9 +168,7 @@ class HumanIntervention(BaseModel):
             reason = data.get("reason")
             if reason is not None:
                 reason_value = (
-                    reason
-                    if isinstance(reason, InterventionReason)
-                    else InterventionReason(reason)
+                    reason if isinstance(reason, InterventionReason) else InterventionReason(reason)
                 )
                 data = {
                     **data,
@@ -305,7 +303,7 @@ class ApplicationAttempt(BaseModel):
         return self.workflow_state in WORKFLOW_TERMINAL
 
     @property
-    def open_intervention(self) -> HumanIntervention | None:
+    def pending_intervention(self) -> HumanIntervention | None:
         return next((item for item in self.interventions if item.open), None)
 
     @property
@@ -315,9 +313,7 @@ class ApplicationAttempt(BaseModel):
     def touch(self) -> None:
         self.updated_at = utcnow()
 
-    def record_event(
-        self, kind: AttemptEventKind, message: str = "", **data: Any
-    ) -> AttemptEvent:
+    def record_event(self, kind: AttemptEventKind, message: str = "", **data: Any) -> AttemptEvent:
         event = AttemptEvent(kind=kind, message=message, data=data)
         self.events.append(event)
         self.touch()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from applyuminati.applications.detect import detect_job
 from applyuminati.core.errors import FailureCategory, NeedsHumanError
 from applyuminati.core.models.execution import (
     ApplicationAttempt,
@@ -9,9 +10,9 @@ from applyuminati.core.models.execution import (
     InterventionResolution,
     WorkflowState,
 )
-from applyuminati.core.models.job import AtsVendor, Job
+from applyuminati.core.models.job import AtsVendor, Job, SourceTier
 from applyuminati.core.models.profile import CareerProfile
-from applyuminati.core.models.task import TaskRecord, TaskState
+from applyuminati.core.models.task import TaskState
 from applyuminati.core.settings import ExecutionMode
 from applyuminati.db.repositories.attempts import AttemptRepository
 from applyuminati.db.repositories.jobs import JobRepository
@@ -19,7 +20,6 @@ from applyuminati.db.repositories.tasks import TaskRepository
 from applyuminati.services.attempt_service import AttemptService
 from applyuminati.services.container import Repositories
 from applyuminati.sources.normalize import build_job
-from applyuminati.core.models.job import SourceTier
 from applyuminati.tasks.queue import TaskQueue
 
 
@@ -73,13 +73,11 @@ async def test_keep_control_does_not_resume(database) -> None:
         )
         attempt.open_intervention(InterventionReason.CAPTCHA_REQUIRED, "Complete the challenge")
         await repos.attempts.save(attempt)
-        opened = attempt.open_intervention
+        opened = attempt.pending_intervention
         assert opened is not None
-        kept = await service.resolve(
-            attempt.id, opened.id, InterventionResolution.KEEP_CONTROL
-        )
+        kept = await service.resolve(attempt.id, opened.id, InterventionResolution.KEEP_CONTROL)
         assert kept.workflow_state is WorkflowState.WAITING_FOR_HUMAN
-        assert kept.open_intervention is not None
+        assert kept.pending_intervention is not None
 
 
 async def test_done_continue_releases_the_pause(database) -> None:
@@ -93,13 +91,11 @@ async def test_done_continue_releases_the_pause(database) -> None:
         )
         attempt.open_intervention(InterventionReason.MFA_REQUIRED, "Complete MFA")
         await repos.attempts.save(attempt)
-        opened = attempt.open_intervention
+        opened = attempt.pending_intervention
         assert opened is not None
-        resumed = await service.resolve(
-            attempt.id, opened.id, InterventionResolution.DONE_CONTINUE
-        )
+        resumed = await service.resolve(attempt.id, opened.id, InterventionResolution.DONE_CONTINUE)
         assert resumed.workflow_state is WorkflowState.PENDING
-        assert resumed.open_intervention is None
+        assert resumed.pending_intervention is None
 
 
 async def test_skip_cancels_the_attempt(database) -> None:
@@ -113,7 +109,7 @@ async def test_skip_cancels_the_attempt(database) -> None:
         )
         attempt.open_intervention(InterventionReason.AUTHENTICATION_REQUIRED, "Sign in")
         await repos.attempts.save(attempt)
-        opened = attempt.open_intervention
+        opened = attempt.pending_intervention
         assert opened is not None
         skipped = await service.resolve(
             attempt.id, opened.id, InterventionResolution.SKIP_APPLICATION
@@ -164,7 +160,7 @@ async def test_inbox_lists_only_open_interventions(database) -> None:
 async def test_needs_human_blocks_instead_of_failing(database) -> None:
     async with database.session() as session:
         queue = TaskQueue(TaskRepository(session))
-        task = await queue.submit("application.execute", {"attempt_id": "x"})
+        await queue.submit("application.execute", {"attempt_id": "x"})
         claimed = await queue.claim()
         assert claimed is not None
         failed = await queue.fail(claimed, NeedsHumanError("sign in"))
@@ -177,8 +173,5 @@ async def test_needs_human_blocks_instead_of_failing(database) -> None:
 
 def test_greenhouse_url_is_detected_from_a_linkedin_job() -> None:
     job = _job()
-    assert job.ats is AtsVendor.UNKNOWN or True
-    from applyuminati.applications.detect import detect_job
-
     detection = detect_job(job)
     assert detection.ats is AtsVendor.GREENHOUSE

@@ -63,7 +63,9 @@ class FakeSession:
 
     async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
         self.clicks.append(locator)
-        thanks = next((page for page in self._pages.values() if "thank" in (page.text or "").lower()), None)
+        thanks = next(
+            (page for page in self._pages.values() if "thank" in (page.text or "").lower()), None
+        )
         if thanks is not None:
             self._url = thanks.url
         return ActionResult(ok=True, action="click")
@@ -222,7 +224,9 @@ async def test_lever_does_not_need_greenhouse_core_logic() -> None:
         text="Lever application",
         elements=[PageElement(locator="go", role=ElementRole.BUTTON, label="Submit application")],
     )
-    thanks = PageObservation(url=apply_url + "/thanks", title="Done", text="Application received. Thank you.")
+    thanks = PageObservation(
+        url=apply_url + "/thanks", title="Done", text="Application received. Thank you."
+    )
     session = FakeSession({apply_url: form, thanks.url: thanks})
     job = build_job(
         source="indeed",

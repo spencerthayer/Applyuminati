@@ -26,8 +26,8 @@ from applyuminati.core.provenance import (
 )
 
 __all__ = [
-    "DEFAULT_AUTHORITY",
     "DECLINED_OPTIONAL",
+    "DEFAULT_AUTHORITY",
     "PolicyDecision",
     "QuestionnairePolicy",
     "authority_for",
@@ -85,71 +85,107 @@ class QuestionnairePolicy:
         authority = authority_for(question.sensitivity, overrides=self.overrides)
         default = self._default_for(question)
         claim = self._claim_for(question, default)
-
-        if authority is AnswerAuthority.REQUIRE_REVIEW:
-            return self._review(question, default, claim, authority, "policy requires review")
-        if authority is AnswerAuthority.DECLINE_IF_OPTIONAL:
-            if not question.required:
-                return PolicyDecision(
+        match authority:
+            case AnswerAuthority.REQUIRE_REVIEW:
+                decision = self._review(
+                    question, default, claim, authority, "policy requires review"
+                )
+            case AnswerAuthority.DECLINE_IF_OPTIONAL:
+                decision = self._decline_or_review(question, default, claim, authority)
+            case AnswerAuthority.ANSWER_IF_VERIFIED:
+                decision = self._verified_or_review(question, default, claim, authority)
+            case AnswerAuthority.REUSE_APPROVED:
+                decision = self._reuse_or_review(question, default, claim, authority)
+            case AnswerAuthority.ALWAYS_ANSWER:
+                decision = self._always_or_review(question, default, claim, authority)
+            case AnswerAuthority.NEVER_ANSWER:
+                decision = PolicyDecision(
                     AnswerDraft(
                         question_key=question.key,
                         question_text=question.text,
-                        answer=DECLINED_OPTIONAL,
-                        status=AnswerStatus.READY,
+                        answer=None,
+                        status=AnswerStatus.NEEDS_USER,
                         sensitivity=question.sensitivity,
-                        rationale="optional question declined by policy",
+                        rationale="policy forbids answering this question",
                     ),
                     authority,
-                    paused=False,
+                    paused=True,
                 )
-            return self._review(
-                question, default, claim, authority, "required question cannot be declined"
-            )
-        if authority is AnswerAuthority.ANSWER_IF_VERIFIED:
-            if claim is not None and claim.level in FACTUAL_LEVELS and default is not None:
-                return self._ready(question, default, claim, authority, "verified profile fact")
-            return self._review(
-                question, default, claim, authority, "no verified fact for this question"
-            )
-        if authority is AnswerAuthority.REUSE_APPROVED:
-            if default is not None and default.level in (
-                AssertionLevel.USER_APPROVED,
-                AssertionLevel.VERIFIED,
-                AssertionLevel.PREFERENCE,
-            ):
-                return self._ready(question, default, claim, authority, "reused approved answer")
-            return self._review(
-                question, default, claim, authority, "no previously approved answer"
-            )
-        if authority is AnswerAuthority.ALWAYS_ANSWER:
-            if default is not None:
-                # Preference and verified facts may be used. A model suggestion
-                # may be drafted but stays NEEDS_REVIEW so it cannot become truth.
-                if default.level is AssertionLevel.MODEL_SUGGESTION:
-                    return self._review(
-                        question,
-                        default,
-                        claim,
-                        authority,
-                        "generated suggestion cannot be submitted as fact",
-                    )
-                return self._ready(question, default, claim, authority, "profile answer available")
-            return self._review(question, None, claim, authority, "no profile answer available")
-        if authority is AnswerAuthority.NEVER_ANSWER:
+            case _:
+                never_authority: Never = authority
+                raise AssertionError(f"unhandled answer authority: {never_authority}")
+        return decision
+
+    def _decline_or_review(
+        self,
+        question: ApplicationQuestion,
+        default: QuestionnaireDefault | None,
+        claim: Claim | None,
+        authority: AnswerAuthority,
+    ) -> PolicyDecision:
+        if not question.required:
             return PolicyDecision(
                 AnswerDraft(
                     question_key=question.key,
                     question_text=question.text,
-                    answer=None,
-                    status=AnswerStatus.NEEDS_USER,
+                    answer=DECLINED_OPTIONAL,
+                    status=AnswerStatus.READY,
                     sensitivity=question.sensitivity,
-                    rationale="policy forbids answering this question",
+                    rationale="optional question declined by policy",
                 ),
                 authority,
-                paused=True,
+                paused=False,
             )
-        never_authority: Never = authority
-        raise AssertionError(f"unhandled answer authority: {never_authority}")
+        return self._review(
+            question, default, claim, authority, "required question cannot be declined"
+        )
+
+    def _verified_or_review(
+        self,
+        question: ApplicationQuestion,
+        default: QuestionnaireDefault | None,
+        claim: Claim | None,
+        authority: AnswerAuthority,
+    ) -> PolicyDecision:
+        if claim is not None and claim.level in FACTUAL_LEVELS and default is not None:
+            return self._ready(question, default, claim, authority, "verified profile fact")
+        return self._review(
+            question, default, claim, authority, "no verified fact for this question"
+        )
+
+    def _reuse_or_review(
+        self,
+        question: ApplicationQuestion,
+        default: QuestionnaireDefault | None,
+        claim: Claim | None,
+        authority: AnswerAuthority,
+    ) -> PolicyDecision:
+        if default is not None and default.level in (
+            AssertionLevel.USER_APPROVED,
+            AssertionLevel.VERIFIED,
+            AssertionLevel.PREFERENCE,
+        ):
+            return self._ready(question, default, claim, authority, "reused approved answer")
+        return self._review(question, default, claim, authority, "no previously approved answer")
+
+    def _always_or_review(
+        self,
+        question: ApplicationQuestion,
+        default: QuestionnaireDefault | None,
+        claim: Claim | None,
+        authority: AnswerAuthority,
+    ) -> PolicyDecision:
+        if default is None:
+            return self._review(question, None, claim, authority, "no profile answer available")
+        if default.level is AssertionLevel.MODEL_SUGGESTION:
+            return self._review(
+                question,
+                default,
+                claim,
+                authority,
+                "generated suggestion cannot be submitted as fact",
+            )
+        return self._ready(question, default, claim, authority, "profile answer available")
 
     def _default_for(self, question: ApplicationQuestion) -> QuestionnaireDefault | None:
         return next(

@@ -20,8 +20,8 @@ from applyuminati import __version__
 from applyuminati.api.errors import applyuminati_error_handler
 from applyuminati.api.routers.applications import router as applications_router
 from applyuminati.api.routers.browser_hosts import router as browser_hosts_router
-from applyuminati.api.routers.inbox import router as inbox_router
 from applyuminati.api.routers.health import router as health_router
+from applyuminati.api.routers.inbox import router as inbox_router
 from applyuminati.api.routers.jobs import router as jobs_router
 from applyuminati.api.routers.profile import router as profile_router
 from applyuminati.api.routers.settings import dashboard_router, settings_router

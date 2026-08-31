@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from applyuminati.applications.driver import DriverContext, DriverOutcomeKind, detect_driver
 from applyuminati.applications.detect import detect_job
+from applyuminati.applications.driver import DriverContext, DriverOutcomeKind, detect_driver
 from applyuminati.browser.base import BrowserSession
 from applyuminati.core.clock import utcnow
 from applyuminati.core.errors import NotFoundError
@@ -95,7 +95,7 @@ class AttemptService:
         waiting = await self._repos.attempts.list_waiting()
         items: list[InboxItem] = []
         for attempt in waiting:
-            intervention = attempt.open_intervention
+            intervention = attempt.pending_intervention
             if intervention is None:
                 continue
             job = await self._repos.jobs.get(attempt.job_id)
@@ -118,19 +118,21 @@ class AttemptService:
         payload: dict[str, Any] | None = None,
     ) -> ApplicationAttempt:
         attempt = await self.get(attempt_id)
-        intervention = next((item for item in attempt.interventions if item.id == intervention_id), None)
+        intervention = next(
+            (item for item in attempt.interventions if item.id == intervention_id), None
+        )
         if intervention is None:
             raise NotFoundError(
                 f"intervention {intervention_id} not found", code="resource_gone.intervention"
             )
         if resolution is InterventionResolution.KEEP_CONTROL:
-            intervention.resolve(resolution, payload=payload)
+            # Leave the intervention open. Resolving it would drop the item
+            # from the inbox while the user still has the browser.
             attempt.record_event(
                 AttemptEventKind.INTERVENTION_RESOLVED,
                 "user is keeping browser control",
                 resolution=resolution.value,
             )
-            # Still waiting. The agent must not reclaim.
             attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN
             await self._repos.attempts.save(attempt)
             return attempt

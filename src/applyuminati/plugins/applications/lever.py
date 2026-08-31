@@ -13,30 +13,11 @@ from applyuminati.applications.driver import (
     DriverContext,
     DriverMetadata,
     DriverOutcome,
-    DriverOutcomeKind,
     application_driver,
 )
-from applyuminati.applications.modes import ActionForbiddenError, check, permitted_actions
-from applyuminati.applications.runner import (
-    advance_questions,
-    apply_ready_answers,
-    complete,
-    fail,
-    handoff_for,
-    mark_submission_attempted,
-    record_observation,
-    upload_documents,
-    verify_submission,
-)
-from applyuminati.browser.base import BrowserSession, ElementRole
-from applyuminati.core.errors import FailureCategory
-from applyuminati.core.models.execution import (
-    ApplicationAttempt,
-    AttemptEventKind,
-    CheckpointKind,
-    SubmissionCertainty,
-    WorkflowState,
-)
+from applyuminati.applications.runner import run_form_application
+from applyuminati.browser.base import BrowserSession, ElementRole, PageElement
+from applyuminati.core.models.execution import ApplicationAttempt
 from applyuminati.core.models.job import AtsVendor
 
 SLUG = "lever"
@@ -49,6 +30,16 @@ METADATA = DriverMetadata(
     version=VERSION,
     hosts=frozenset({"jobs.lever.co", "lever.co"}),
 )
+
+_SUBMIT_LABELS = frozenset({"submit application", "apply now"})
+
+
+def _is_submit(element: PageElement) -> bool:
+    return (
+        element.role is ElementRole.BUTTON
+        and bool(element.label)
+        and element.label.lower() in _SUBMIT_LABELS
+    )
 
 
 class LeverDriver:
@@ -68,84 +59,19 @@ class LeverDriver:
         session: BrowserSession,
         context: DriverContext,
     ) -> DriverOutcome:
-        attempt.driver = SLUG
-        attempt.driver_version = VERSION
-        attempt.workflow_state = WorkflowState.RUNNING
-        if attempt.events == []:
-            attempt.record_event(AttemptEventKind.STARTED, "lever application opened")
-
-        if attempt.submission_attempted_at is not None:
-            observation = await session.observe()
-            record_observation(attempt, observation)
-            evidence = verify_submission(observation)
-            if evidence.certainty is SubmissionCertainty.UNCERTAIN:
-                return fail(
-                    attempt,
-                    category=FailureCategory.DUPLICATE_ACTION,
-                    code="application.submission_uncertain",
-                    message="submission was attempted earlier; confirmation is still uncertain",
-                )
-            return complete(attempt, evidence)
-
         url = context.job.apply_url or context.job.canonical_url
         if not url.rstrip("/").endswith("/apply"):
             url = url.rstrip("/") + "/apply"
-        observation = await session.navigate(url)
-        record_observation(attempt, observation)
-        attempt.record_checkpoint(
-            CheckpointKind.APPLICATION_OPENED.value, url=observation.url, summary=observation.title or ""
+        return await run_form_application(
+            attempt,
+            session,
+            context,
+            slug=SLUG,
+            version=VERSION,
+            started_message="lever application opened",
+            apply_url=url,
+            is_submit=_is_submit,
         )
-        context.observation = observation
-
-        blocked = handoff_for(attempt, observation)
-        if blocked is not None:
-            return blocked
-
-        paused = advance_questions(attempt, observation, context)
-        if paused is not None:
-            return paused
-
-        permissions = permitted_actions(context.mode, context.profile.strategy)
-        check(permissions, "fill_form")
-        await apply_ready_answers(attempt, session, observation)
-        attempt.record_checkpoint(CheckpointKind.QUESTIONNAIRE_COMPLETE.value)
-
-        if observation.file_inputs():
-            await upload_documents(attempt, session, context)
-
-        submit = next(
-            (
-                element
-                for element in observation.elements
-                if element.role is ElementRole.BUTTON
-                and element.label
-                and element.label.lower() in {"submit application", "apply now"}
-            ),
-            None,
-        )
-        if submit is None:
-            attempt.record_checkpoint(CheckpointKind.REVIEW_PAGE_REACHED.value)
-            return DriverOutcome(kind=DriverOutcomeKind.CONTINUED, attempt=attempt)
-
-        try:
-            check(permissions, "submit")
-        except ActionForbiddenError:
-            attempt.record_checkpoint(CheckpointKind.REVIEW_PAGE_REACHED.value, summary="fill without submit")
-            attempt.workflow_state = WorkflowState.COMPLETED
-            return DriverOutcome(kind=DriverOutcomeKind.COMPLETED, attempt=attempt)
-
-        mark_submission_attempted(attempt)
-        clicked = await session.click(submit.locator, label=submit.label)
-        observation = await session.observe()
-        record_observation(attempt, observation)
-        if not clicked.ok:
-            return fail(
-                attempt,
-                category=FailureCategory.EXTRACTION_DRIFT,
-                code="application.submit_failed",
-                message=clicked.detail or "submit click failed",
-            )
-        return complete(attempt, verify_submission(observation))
 
 
 def _create() -> LeverDriver:

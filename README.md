@@ -56,7 +56,7 @@ plugins/      concrete adapters (sources, LLM, browser, agents, email)
 **Dependency direction** (enforced by import-linter in CI):
 
 ```
-CLI / API / host  →  services  →  plugins  →  {sources, scoring, resume, llm, browser, agents, email, tasks, applications, memory}  →  db  →  core
+CLI / API / host  →  services  →  plugins  →  applications  →  {sources, scoring, resume, llm, browser, agents, email, tasks, memory}  →  db  →  core
 ```
 
 Core domain logic never imports vendors, frameworks, or databases. Plugins depend on contracts, never the reverse.

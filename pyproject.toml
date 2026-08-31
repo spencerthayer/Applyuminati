@@ -143,6 +143,11 @@ ignore = [
 # ASYNC109: fakes must mirror the signature of the backend they stand in for.
 "tests/**" = ["ANN", "ASYNC109", "S105", "S106", "PLR0915"]
 "src/applyuminati/cli/**" = ["T20", "B008", "ASYNC240"]
+"src/applyuminati/host/**" = ["T20", "B008"]
+# Closed HostCommand switch: one branch per protocol verb is the point.
+"src/applyuminati/host/dispatcher.py" = ["T20", "B008", "PLR0911", "PLR0912"]
+# Shared ATS form flow: each early return is a typed workflow outcome.
+"src/applyuminati/applications/runner.py" = ["PLR0911"]
 "src/applyuminati/api/**" = ["B008"]
 "src/applyuminati/api/routers/**" = ["PLR0917"]
 "src/applyuminati/db/migrations/**" = ["ANN", "I001", "PLR0915"]
@@ -208,7 +213,8 @@ layers = [
   "applyuminati.cli | applyuminati.api | applyuminati.host",
   "applyuminati.services",
   "applyuminati.plugins",
-  "applyuminati.applications | applyuminati.scoring | applyuminati.resume | applyuminati.memory | applyuminati.sources | applyuminati.browser | applyuminati.agents | applyuminati.email | applyuminati.llm | applyuminati.tasks",
+  "applyuminati.applications",
+  "applyuminati.scoring | applyuminati.resume | applyuminati.memory | applyuminati.sources | applyuminati.browser | applyuminati.agents | applyuminati.email | applyuminati.llm | applyuminati.tasks",
   "applyuminati.db",
   "applyuminati.core",
 ]

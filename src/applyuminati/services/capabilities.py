@@ -8,6 +8,7 @@ plugin is added or a maturity claim changes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from applyuminati.agents.base import AGENT_REGISTRY
 from applyuminati.applications.driver import APPLICATION_DRIVER_REGISTRY
@@ -47,7 +48,7 @@ def collect_capability_matrix() -> list[CapabilityRow]:
     return sorted(rows, key=lambda row: (row.kind, row.slug))
 
 
-def _rows_from(registry: Registry[object]) -> list[CapabilityRow]:
+def _rows_from(registry: Registry[Any]) -> list[CapabilityRow]:
     return [
         CapabilityRow(
             kind=descriptor.kind,

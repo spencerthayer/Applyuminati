@@ -13,7 +13,7 @@ from applyuminati import __version__
 from applyuminati.core.settings import get_settings
 from applyuminati.host.client import HostClient, open_local_session
 from applyuminati.host.discovery import advertise_backends, loopback_url
-from applyuminati.host.dispatcher import CommandDispatcher
+from applyuminati.host.dispatcher import CommandDispatcher, HostSession
 from applyuminati.host.security import require_secure_server
 
 app = typer.Typer(
@@ -56,7 +56,7 @@ def run_host(
         )
         dispatcher = CommandDispatcher(documents_dir=docs, capabilities=capabilities)
 
-        async def factory(*, backend: str | None = None):
+        async def factory(*, backend: str | None = None) -> HostSession:
             return await open_local_session(settings, backend=backend)
 
         client = HostClient(

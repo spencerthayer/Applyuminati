@@ -623,7 +623,9 @@ class _LiveApi:
     def __init__(self, database) -> None:
         set_container(None)
         set_database(database)
-        settings = database.settings.model_copy(update={"security": SecuritySettings(enabled=False)})
+        settings = database.settings.model_copy(
+            update={"security": SecuritySettings(enabled=False)}
+        )
         self.app = create_app(settings)
         self.port = _free_port()
         self._server = uvicorn.Server(

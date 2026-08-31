@@ -63,9 +63,7 @@ class CommandDispatcher:
                 )
             recorded = self._results.get(command.idempotency_key)
             if recorded is not None:
-                return recorded.model_copy(
-                    update={"command_id": command.id, "deduplicated": True}
-                )
+                return recorded.model_copy(update={"command_id": command.id, "deduplicated": True})
         return None
 
     def remember(self, command: CommandMessage, result: ResultMessage) -> ResultMessage:
@@ -147,7 +145,9 @@ class CommandDispatcher:
             result = await session.upload_file(str(params["locator"]), path)
             return result.model_dump(mode="json")
         if command.command is HostCommand.SCREENSHOT:
-            stored = await session.screenshot(relative_path=str(params.get("relative_path", "shot.png")))
+            stored = await session.screenshot(
+                relative_path=str(params.get("relative_path", "shot.png"))
+            )
             return {"path": stored}
         if command.command is HostCommand.WAIT_FOR_NAVIGATION:
             result = await session.wait_for_navigation()
@@ -159,7 +159,9 @@ class CommandDispatcher:
             result = await session.request_human_control(str(params.get("instruction", "")))
             return result.model_dump(mode="json")
         if command.command is HostCommand.RECLAIM_CONTROL:
-            result = await session.reclaim_control(confirmed_by_user=bool(params.get("confirmed_by_user")))
+            result = await session.reclaim_control(
+                confirmed_by_user=bool(params.get("confirmed_by_user"))
+            )
             return result.model_dump(mode="json")
         if command.command is HostCommand.CONTROL_STATE:
             return {"owner": (await session.control_state()).value}

@@ -7,14 +7,17 @@ records state, and refuses to submit twice.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from applyuminati.applications.driver import DriverContext, DriverOutcome, DriverOutcomeKind
-from applyuminati.applications.modes import check, permitted_actions
+from applyuminati.applications.modes import ActionForbiddenError, check, permitted_actions
 from applyuminati.applications.policy import QuestionnairePolicy
 from applyuminati.browser.base import (
+    HANDOFF_CONDITIONS,
     BrowserSession,
     ControlOwner,
-    HANDOFF_CONDITIONS,
     PageCondition,
+    PageElement,
     PageObservation,
 )
 from applyuminati.core.clock import utcnow
@@ -38,6 +41,7 @@ __all__ = [
     "handoff_for",
     "mark_submission_attempted",
     "record_observation",
+    "run_form_application",
     "verify_submission",
 ]
 
@@ -65,9 +69,7 @@ def record_observation(attempt: ApplicationAttempt, observation: PageObservation
     attempt.touch()
 
 
-def handoff_for(
-    attempt: ApplicationAttempt, observation: PageObservation
-) -> DriverOutcome | None:
+def handoff_for(attempt: ApplicationAttempt, observation: PageObservation) -> DriverOutcome | None:
     """Open a typed intervention when the page requires a human.
 
     CAPTCHA, MFA and login walls are handoff, never circumvention.
@@ -76,14 +78,18 @@ def handoff_for(
         return None
     reason = CONDITION_REASONS.get(observation.condition, InterventionReason.UNKNOWN_INTERACTION)
     instruction = {
-        InterventionReason.AUTHENTICATION_REQUIRED: "Sign in, then return here and choose Done, continue.",
+        InterventionReason.AUTHENTICATION_REQUIRED: (
+            "Sign in, then return here and choose Done, continue."
+        ),
         InterventionReason.CAPTCHA_REQUIRED: (
             "Complete the human challenge in the browser. Applyuminati will not bypass it."
         ),
         InterventionReason.AUTOMATION_BLOCKED: (
             "The site is refusing automation. Take over the browser or skip this application."
         ),
-        InterventionReason.UNKNOWN_INTERACTION: "The page needs you. Inspect it, then continue or skip.",
+        InterventionReason.UNKNOWN_INTERACTION: (
+            "The page needs you. Inspect it, then continue or skip."
+        ),
     }[reason]
     intervention = attempt.open_intervention(reason, instruction)
     return DriverOutcome(
@@ -167,7 +173,9 @@ async def upload_documents(
             )
         )
     if attempt.uploads:
-        attempt.record_checkpoint(CheckpointKind.DOCUMENTS_UPLOADED.value, summary="resume attached")
+        attempt.record_checkpoint(
+            CheckpointKind.DOCUMENTS_UPLOADED.value, summary="resume attached"
+        )
 
 
 def mark_submission_attempted(attempt: ApplicationAttempt) -> None:
@@ -215,8 +223,7 @@ def fail(
         driver=attempt.driver,
         step=step or attempt.current_step,
         checkpoint=attempt.latest_checkpoint.kind if attempt.latest_checkpoint else None,
-        retryable=category
-        in {FailureCategory.TRANSIENT_NETWORK, FailureCategory.RATE_LIMITED},
+        retryable=category in {FailureCategory.TRANSIENT_NETWORK, FailureCategory.RATE_LIMITED},
         needs_human=category
         in {
             FailureCategory.NEEDS_HUMAN,
@@ -247,3 +254,87 @@ async def agent_still_owns(session: BrowserSession) -> bool:
     """Refuse to act while the human has the browser."""
     owner = await session.control_state()
     return owner is ControlOwner.AGENT
+
+
+async def run_form_application(
+    attempt: ApplicationAttempt,
+    session: BrowserSession,
+    context: DriverContext,
+    *,
+    slug: str,
+    version: str,
+    started_message: str,
+    apply_url: str,
+    is_submit: Callable[[PageElement], bool],
+) -> DriverOutcome:
+    """Shared Greenhouse/Lever form flow. Drivers only supply URL and submit matching."""
+    attempt.driver = slug
+    attempt.driver_version = version
+    attempt.workflow_state = WorkflowState.RUNNING
+    if attempt.events == []:
+        attempt.record_event(AttemptEventKind.STARTED, started_message)
+
+    if attempt.submission_attempted_at is not None:
+        observation = await session.observe()
+        record_observation(attempt, observation)
+        evidence = verify_submission(observation)
+        if evidence.certainty is SubmissionCertainty.UNCERTAIN:
+            return fail(
+                attempt,
+                category=FailureCategory.DUPLICATE_ACTION,
+                code="application.submission_uncertain",
+                message="submission was attempted earlier; confirmation is still uncertain",
+            )
+        return complete(attempt, evidence)
+
+    observation = await session.navigate(apply_url)
+    record_observation(attempt, observation)
+    attempt.record_checkpoint(
+        CheckpointKind.APPLICATION_OPENED.value,
+        url=observation.url,
+        summary=observation.title or "",
+    )
+    context.observation = observation
+
+    blocked = handoff_for(attempt, observation)
+    if blocked is not None:
+        return blocked
+
+    paused = advance_questions(attempt, observation, context)
+    if paused is not None:
+        return paused
+
+    permissions = permitted_actions(context.mode, context.profile.strategy)
+    check(permissions, "fill_form")
+    await apply_ready_answers(attempt, session, observation)
+    attempt.record_checkpoint(CheckpointKind.QUESTIONNAIRE_COMPLETE.value)
+
+    if observation.file_inputs():
+        await upload_documents(attempt, session, context)
+
+    submit = next((element for element in observation.elements if is_submit(element)), None)
+    if submit is None:
+        attempt.record_checkpoint(CheckpointKind.REVIEW_PAGE_REACHED.value)
+        return DriverOutcome(kind=DriverOutcomeKind.CONTINUED, attempt=attempt)
+
+    try:
+        check(permissions, "submit")
+    except ActionForbiddenError:
+        attempt.record_checkpoint(
+            CheckpointKind.REVIEW_PAGE_REACHED.value, summary="fill without submit"
+        )
+        attempt.workflow_state = WorkflowState.COMPLETED
+        return DriverOutcome(kind=DriverOutcomeKind.COMPLETED, attempt=attempt)
+
+    mark_submission_attempted(attempt)
+    clicked = await session.click(submit.locator, label=submit.label)
+    observation = await session.observe()
+    record_observation(attempt, observation)
+    if not clicked.ok:
+        return fail(
+            attempt,
+            category=FailureCategory.EXTRACTION_DRIFT,
+            code="application.submit_failed",
+            message=clicked.detail or "submit click failed",
+        )
+    return complete(attempt, verify_submission(observation))

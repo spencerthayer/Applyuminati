@@ -88,7 +88,7 @@ async def resolve_inbox(
         )
     except NotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.message) from exc
-    open_item = attempt.open_intervention
+    open_item = attempt.pending_intervention
     return ResolveResponse(
         attempt_id=attempt.id,
         workflow_state=attempt.workflow_state.value,

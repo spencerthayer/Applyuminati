@@ -54,10 +54,9 @@ to the container.
 
    ```bash
    uv tool install applyuminati        # or pipx install applyuminati
-   applyuminati-browser-host \
-     --server ws://127.0.0.1:8420/api/v1/browser-host/ws \
-     --host-id spencers-mac \
-     --credential-file ~/.applyuminati/browser-host.credential
+   APPLYUMINATI_HOST_CREDENTIAL='...' applyuminati-browser-host run \
+     --server ws://127.0.0.1:8420/api/v1/browser-hosts/ws \
+     --host-id spencers-mac
    ```
 
 The host reconnects on its own with exponential backoff, so restarting either

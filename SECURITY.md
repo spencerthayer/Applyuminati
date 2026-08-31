@@ -14,6 +14,9 @@ Email security@spencerthayer.com with a description of the issue and steps to re
 
 ## Credential handling
 
+- Browser Host pairing secrets are shown once. Only a hash is stored, so a
+  copy of the database cannot drive the user's browser. Remote hosts require
+  `wss://` unless the operator passes `--allow-insecure`.
 - API keys are stored as `pydantic.SecretStr` and never serialized into API responses or logs.
 - `Settings.public_dict()` exposes `has_api_key: bool`, never the key itself.
 - The `.env.example` file contains only empty placeholders.

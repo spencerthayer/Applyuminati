@@ -126,7 +126,7 @@ desktop port, which is what makes Docker Desktop, a native install, and a NAS
 deployment all work with the same code.
 
 ```
-applyuminati-browser-host  --->  wss://applyuminati.local/api/v1/browser-host/ws
+applyuminati-browser-host  --->  wss://applyuminati.local/api/v1/browser-hosts/ws
 ```
 
 A single WebSocket carries both directions: server commands down, results and

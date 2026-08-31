@@ -446,10 +446,88 @@ class LLMCallRow(Base):
     validation_retries: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class BrowserHostRow(Base):
+    """A paired Browser Host: the machine that owns a browser for us.
+
+    Pairing is durable; *presence* is not. ``state`` and ``last_seen_at`` are a
+    cache of what the in-process connection registry knew when it last wrote,
+    and a row saying ``connected`` after a restart is stale by definition. The
+    API reconciles against the live registry rather than trusting this column,
+    which is why it is not worth a constraint.
+
+    ``credential_hash`` is a plain SHA-256, not a KDF: the secret is 256 bits of
+    machine-generated entropy, so there is no dictionary to attack, and a host
+    reconnect loop must not pay a 600k-iteration hash on every attempt.
+    """
+
+    __tablename__ = "browser_hosts"
+    __table_args__ = (
+        # The host's self-chosen id is how a restarted host finds its own record
+        # instead of accumulating a new one per reconnect, so it has to be unique.
+        UniqueConstraint("host_id", name="uq_browser_hosts_host_id"),
+        Index("ix_browser_hosts_state_seen", "state", "last_seen_at"),
+    )
+
+    id: Mapped[str] = _pk()
+    host_id: Mapped[str] = mapped_column(String(128))
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    platform: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    architecture: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    host_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    protocol_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    state: Mapped[str] = mapped_column(String(16), default="registered", index=True)
+    #: Advertised backends and their capabilities, as reported at registration.
+    backends: Mapped[list[Any]] = mapped_column(default=list)
+    #: Not indexed. Lookup is always by ``host_id`` and the hash is then compared
+    #: in constant time; an index here would only serve a query by credential,
+    #: which is the enumeration oracle this design avoids.
+    credential_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    credential_prefix: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    credential_issued_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    paired_at: Mapped[datetime] = mapped_column(default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_connected_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_sessions: Mapped[list[str]] = mapped_column(default=list)
+
+
+class ApplicationAttemptRow(Base):
+    """One execution attempt. Nested progress lives in JSON columns."""
+
+    __tablename__ = "application_attempts"
+    __table_args__ = (
+        Index("ix_attempts_application", "application_id", "updated_at"),
+        Index("ix_attempts_workflow_state", "workflow_state", "updated_at"),
+    )
+
+    id: Mapped[str] = _pk()
+    application_id: Mapped[str] = mapped_column(ULID, index=True)
+    job_id: Mapped[str] = mapped_column(ULID, index=True)
+    profile_id: Mapped[str | None] = mapped_column(ULID, nullable=True)
+    driver: Mapped[str] = mapped_column(String(64))
+    driver_version: Mapped[str] = mapped_column(String(16), default="1")
+    workflow_state: Mapped[str] = mapped_column(String(32), default="pending")
+    current_step: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    submission_mode: Mapped[str] = mapped_column(String(32), default="fill_no_submit")
+    browser_host_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    browser_backend: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    browser_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    task_space_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    task_space_numeric_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    started_at: Mapped[datetime] = mapped_column(default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(default=utcnow, onupdate=utcnow)
+    completed_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    submission_attempted_at: Mapped[datetime | None] = mapped_column(nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(default=dict)
+
+
 __all__ = [
     "ApplicationArtifactRow",
+    "ApplicationAttemptRow",
     "ApplicationEventRow",
     "ApplicationRow",
+    "BrowserHostRow",
     "ClaimRow",
     "CompanyResearchRow",
     "FitScoreRow",

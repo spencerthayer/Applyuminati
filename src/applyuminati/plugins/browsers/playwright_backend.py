@@ -27,7 +27,7 @@ from applyuminati.browser.base import (
 )
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.logging import get_logger
-from applyuminati.core.registry import HealthReport, HealthState
+from applyuminati.core.registry import HealthReport, HealthState, PluginMaturity
 from applyuminati.core.settings import Settings
 
 log = get_logger(__name__)
@@ -397,4 +397,5 @@ PLUGIN = browser_plugin(
     description="Portable Playwright-based browser backend.",
     capabilities=_CAPABILITIES,
     priority=5,
+    maturity=PluginMaturity.HEALTH_PROBE_WORKING,
 )

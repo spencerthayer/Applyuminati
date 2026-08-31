@@ -5,6 +5,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { Jobs } from "./pages/Jobs";
 import { JobDetail } from "./pages/JobDetail";
 import { Login } from "./pages/Login";
+import { NeedsYou } from "./pages/NeedsYou";
 import { Profile } from "./pages/Profile";
 import { Settings } from "./pages/Settings";
 
@@ -27,6 +28,7 @@ export function App() {
       <Layout>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/needs-you" element={<NeedsYou />} />
           <Route path="/jobs" element={<Jobs />} />
           <Route path="/jobs/:id" element={<JobDetail />} />
           <Route path="/profile" element={<Profile />} />

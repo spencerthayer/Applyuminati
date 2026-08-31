@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from applyuminati.core.clock import utcnow
 from applyuminati.core.errors import FailureCategory
 from applyuminati.core.ids import new_ulid
-from applyuminati.core.registry import HealthReport, PluginDescriptor, Registry
+from applyuminati.core.registry import HealthReport, PluginDescriptor, PluginMaturity, Registry
 
 
 class AgentCapability(StrEnum):
@@ -175,6 +175,7 @@ def agent_plugin(
     capabilities: frozenset[AgentCapability],
     description: str = "",
     priority: int = 0,
+    maturity: PluginMaturity = PluginMaturity.ADAPTER_EXISTS,
 ) -> PluginDescriptor[AgentBackend]:
     return PluginDescriptor[AgentBackend](
         slug=slug,
@@ -184,6 +185,7 @@ def agent_plugin(
         description=description,
         capabilities=frozenset(c.value for c in capabilities),
         priority=priority,
+        maturity=maturity,
     )
 
 

@@ -15,7 +15,7 @@ from applyuminati.core.errors import ApplyuminatiError, FailureCategory
 from applyuminati.core.settings import ExecutionMode
 from applyuminati.core.strategy import SearchStrategy
 
-__all__ = ["ActionPermissions", "check", "permitted_actions"]
+__all__ = ["ActionForbiddenError", "ActionPermissions", "check", "permitted_actions"]
 
 
 @dataclass(frozen=True, slots=True)

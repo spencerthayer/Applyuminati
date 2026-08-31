@@ -223,6 +223,58 @@ export interface AuthStatus {
   listens_beyond_loopback: boolean;
 }
 
+/** `applyuminati.api.routers.inbox.InboxEntry` */
+export type InterventionReason =
+  | "authentication_required"
+  | "captcha_required"
+  | "mfa_required"
+  | "identity_verification"
+  | "legal_attestation"
+  | "ambiguous_question"
+  | "document_required"
+  | "payment_or_fee"
+  | "user_review"
+  | "automation_blocked"
+  | "unknown_interaction";
+
+export type InterventionResolution =
+  | "done_continue"
+  | "skip_application"
+  | "keep_control"
+  | "answer"
+  | "approve"
+  | "reject"
+  | "provide_document"
+  | "cancel";
+
+export interface InboxEntry {
+  attempt_id: string;
+  application_id: string;
+  job_id: string;
+  company?: string | null;
+  title?: string | null;
+  intervention_id: string;
+  reason: InterventionReason;
+  instruction: string;
+  requires_browser_handoff: boolean;
+  question_text?: string | null;
+  browser_host_id?: string | null;
+  browser_session_id?: string | null;
+  task_space_id?: string | null;
+  opened_at: IsoDateTime;
+}
+
+export interface ResolveInboxRequest {
+  resolution: InterventionResolution;
+  payload?: JsonObject;
+}
+
+export interface ResolveInboxResponse {
+  attempt_id: string;
+  workflow_state: string;
+  open_intervention?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------

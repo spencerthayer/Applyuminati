@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from applyuminati.core.clock import utcnow
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.provenance import Confidence
-from applyuminati.core.registry import HealthReport, PluginDescriptor, Registry
+from applyuminati.core.registry import HealthReport, PluginDescriptor, PluginMaturity, Registry
 
 
 class EmailCapability(StrEnum):
@@ -206,6 +206,7 @@ def email_plugin(
     description: str = "",
     requires_auth: bool = True,
     priority: int = 0,
+    maturity: PluginMaturity = PluginMaturity.ADAPTER_EXISTS,
 ) -> PluginDescriptor[EmailProvider]:
     return PluginDescriptor[EmailProvider](
         slug=slug,
@@ -216,6 +217,7 @@ def email_plugin(
         capabilities=frozenset(c.value for c in capabilities),
         requires_auth=requires_auth,
         priority=priority,
+        maturity=maturity,
     )
 
 

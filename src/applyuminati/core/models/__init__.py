@@ -13,6 +13,7 @@ from applyuminati.core.models.application import (
     allowed_transitions,
     can_transition,
 )
+from applyuminati.core.models.browser_host import BrowserHostRecord, HostConnectionState
 from applyuminati.core.models.common import (
     Compensation,
     CompensationPeriod,
@@ -22,6 +23,13 @@ from applyuminati.core.models.common import (
     RemoteMode,
     SeniorityLevel,
     seniority_distance,
+)
+from applyuminati.core.models.execution import (
+    ApplicationAttempt,
+    HumanIntervention,
+    InterventionReason,
+    InterventionResolution,
+    WorkflowState,
 )
 from applyuminati.core.models.job import (
     AtsVendor,
@@ -58,6 +66,7 @@ from applyuminati.core.models.profile import (
     WritingStyle,
 )
 from applyuminati.core.models.questionnaire import (
+    AnswerAuthority,
     AnswerDraft,
     AnswerStatus,
     ApplicationQuestion,
@@ -88,15 +97,18 @@ from applyuminati.core.models.task import (
 
 __all__ = [
     "ActorKind",
+    "AnswerAuthority",
     "AnswerDraft",
     "AnswerStatus",
     "Application",
     "ApplicationArtifact",
+    "ApplicationAttempt",
     "ApplicationEvent",
     "ApplicationQuestion",
     "ApplicationState",
     "ApprovalSignal",
     "AtsVendor",
+    "BrowserHostRecord",
     "CareerProfile",
     "CompanyResearch",
     "Compensation",
@@ -107,6 +119,10 @@ __all__ = [
     "EditKind",
     "EmploymentType",
     "FitScore",
+    "HostConnectionState",
+    "HumanIntervention",
+    "InterventionReason",
+    "InterventionResolution",
     "Job",
     "JobSourceRecord",
     "JobTargets",
@@ -141,6 +157,7 @@ __all__ = [
     "WordingPreference",
     "WorkAuthorizationStatus",
     "WorkEligibility",
+    "WorkflowState",
     "WritingStyle",
     "allowed_transitions",
     "can_transition",

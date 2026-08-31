@@ -30,6 +30,7 @@ dependencies = [
   "structlog>=24.4",
   "typer>=0.15",
   "uvicorn[standard]>=0.34",
+  "websockets>=14.0",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +38,7 @@ browser = ["playwright>=1.49"]
 
 [project.scripts]
 applyuminati = "applyuminati.cli.main:app"
+applyuminati-browser-host = "applyuminati.host.cli:main"
 
 # Entry-point groups used for out-of-tree plugin discovery. Third-party
 # distributions register adapters here; nothing in the core imports them.
@@ -63,6 +65,10 @@ imap = "applyuminati.plugins.email.imap:PLUGIN"
 openai_compatible = "applyuminati.plugins.llm.openai_compatible:PLUGIN"
 anthropic = "applyuminati.plugins.llm.anthropic:PLUGIN"
 gemini = "applyuminati.plugins.llm.gemini:PLUGIN"
+
+[project.entry-points."applyuminati.application_drivers"]
+greenhouse = "applyuminati.plugins.applications.greenhouse:PLUGIN"
+lever = "applyuminati.plugins.applications.lever:PLUGIN"
 
 [project.urls]
 Homepage = "https://github.com/spencerthayer/Applyuminati"
@@ -137,11 +143,20 @@ ignore = [
 # ASYNC109: fakes must mirror the signature of the backend they stand in for.
 "tests/**" = ["ANN", "ASYNC109", "S105", "S106", "PLR0915"]
 "src/applyuminati/cli/**" = ["T20", "B008", "ASYNC240"]
+"src/applyuminati/host/**" = ["T20", "B008"]
+# Closed HostCommand switch: one branch per protocol verb is the point.
+"src/applyuminati/host/dispatcher.py" = ["T20", "B008", "PLR0911", "PLR0912"]
+# Shared ATS form flow: each early return is a typed workflow outcome.
+"src/applyuminati/applications/runner.py" = ["PLR0911"]
 "src/applyuminati/api/**" = ["B008"]
 "src/applyuminati/api/routers/**" = ["PLR0917"]
 "src/applyuminati/db/migrations/**" = ["ANN", "I001", "PLR0915"]
 "src/applyuminati/plugins/browsers/shared.py" = ["E501"] # embedded JS literal
 "src/applyuminati/plugins/browsers/ego_lite.py" = ["ASYNC109", "ASYNC240"] # timeout is a Protocol-mandated kwarg; path checks are single stat calls
+# ASYNC109: the deadline also travels on the wire, so the host refuses a command
+# we have already abandoned. asyncio.timeout would only cancel our side and leave
+# the host free to execute it late against a page that has moved on.
+"src/applyuminati/browser/host_manager.py" = ["ASYNC109"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
@@ -195,10 +210,11 @@ include_external_packages = true
 name = "Layered architecture (higher layers may import lower layers only)"
 type = "layers"
 layers = [
-  "applyuminati.cli | applyuminati.api",
+  "applyuminati.cli | applyuminati.api | applyuminati.host",
   "applyuminati.services",
   "applyuminati.plugins",
-  "applyuminati.applications | applyuminati.scoring | applyuminati.resume | applyuminati.memory | applyuminati.sources | applyuminati.browser | applyuminati.agents | applyuminati.email | applyuminati.llm | applyuminati.tasks",
+  "applyuminati.applications",
+  "applyuminati.scoring | applyuminati.resume | applyuminati.memory | applyuminati.sources | applyuminati.browser | applyuminati.agents | applyuminati.email | applyuminati.llm | applyuminati.tasks",
   "applyuminati.db",
   "applyuminati.core",
 ]
@@ -245,5 +261,9 @@ source_modules = [
   "applyuminati.resume",
   "applyuminati.applications",
   "applyuminati.services",
+  # The Browser Host protocol and connection manager live here and must stay
+  # transport-agnostic: the WebSocket adapter belongs in the api layer, which is
+  # what lets the protocol be tested without running a server.
+  "applyuminati.browser",
 ]
 forbidden_modules = ["fastapi", "starlette", "uvicorn", "typer"]

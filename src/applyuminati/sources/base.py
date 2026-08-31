@@ -28,7 +28,7 @@ from applyuminati.core.clock import utcnow
 from applyuminati.core.errors import ApplyuminatiError, FailureCategory
 from applyuminati.core.models.common import EmploymentType, RemoteMode
 from applyuminati.core.models.job import AtsVendor, Job, SourceTier, VerificationState
-from applyuminati.core.registry import HealthReport, PluginDescriptor, Registry
+from applyuminati.core.registry import HealthReport, PluginDescriptor, PluginMaturity, Registry
 from applyuminati.core.strategy import SearchStrategy
 
 
@@ -279,6 +279,7 @@ def source_plugin(
     options_schema: type[BaseModel] | None = None,
     requires_auth: bool = False,
     priority: int = 0,
+    maturity: PluginMaturity = PluginMaturity.ADAPTER_EXISTS,
 ) -> PluginDescriptor[JobSource]:
     """Build a descriptor for a job-source plugin."""
     return PluginDescriptor[JobSource](
@@ -291,6 +292,7 @@ def source_plugin(
         options_schema=options_schema,
         requires_auth=requires_auth,
         priority=priority,
+        maturity=maturity,
     )
 
 

@@ -18,10 +18,13 @@ from dataclasses import dataclass
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from applyuminati.browser.host_manager import BrowserHostManager
 from applyuminati.core.logging import configure_logging, get_logger
 from applyuminati.core.settings import Settings, get_settings
 from applyuminati.db.repositories import (
     ApplicationRepository,
+    AttemptRepository,
+    BrowserHostRepository,
     JobRepository,
     LLMCallRepository,
     MemoryRepository,
@@ -57,6 +60,8 @@ class Repositories:
     tasks: TaskRepository
     research: ResearchRepository
     llm_calls: LLMCallRepository
+    browser_hosts: BrowserHostRepository
+    attempts: AttemptRepository
 
     @classmethod
     def bind(cls, session: AsyncSession) -> Repositories:
@@ -72,6 +77,8 @@ class Repositories:
             tasks=TaskRepository(session),
             research=ResearchRepository(session),
             llm_calls=LLMCallRepository(session),
+            browser_hosts=BrowserHostRepository(session),
+            attempts=AttemptRepository(session),
         )
 
 
@@ -86,6 +93,10 @@ class ServiceContainer:
         self.settings.ensure_directories()
         self.database = database or get_database(self.settings)
         self._llm: LLMClient | None = None
+        #: Live Browser Host connections. Process-wide because a connection
+        #: cannot outlive the process holding it, so this is presence rather than
+        #: state worth persisting.
+        self.browser_hosts = BrowserHostManager()
         _register_builtin_plugins()
 
     # -- resources --------------------------------------------------------
@@ -130,6 +141,7 @@ def _register_builtin_plugins() -> None:
     concrete adapters exist, so it is the right place to wire them up.
     """
     from applyuminati.plugins.agents import register_agents
+    from applyuminati.plugins.applications import register_application_drivers
     from applyuminati.plugins.browsers import register_browsers
     from applyuminati.plugins.email import register_email_providers
     from applyuminati.plugins.llm import register_llm_providers
@@ -140,6 +152,7 @@ def _register_builtin_plugins() -> None:
     register_browsers()
     register_agents()
     register_email_providers()
+    register_application_drivers()
 
 
 _container: ServiceContainer | None = None

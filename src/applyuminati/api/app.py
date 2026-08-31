@@ -19,7 +19,9 @@ from fastapi.staticfiles import StaticFiles
 from applyuminati import __version__
 from applyuminati.api.errors import applyuminati_error_handler
 from applyuminati.api.routers.applications import router as applications_router
+from applyuminati.api.routers.browser_hosts import router as browser_hosts_router
 from applyuminati.api.routers.health import router as health_router
+from applyuminati.api.routers.inbox import router as inbox_router
 from applyuminati.api.routers.jobs import router as jobs_router
 from applyuminati.api.routers.profile import router as profile_router
 from applyuminati.api.routers.settings import dashboard_router, settings_router
@@ -38,6 +40,13 @@ log = get_logger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     container = get_container()
     log.info("api.starting", version=__version__, data_dir=str(container.settings.data_dir))
+    # A connection cannot be inherited from a previous process, so any host row
+    # still claiming to be connected is a leftover. Leaving it would make the UI
+    # promise a browser that is not there.
+    async with container.repositories() as repos:
+        reset = await repos.browser_hosts.clear_stale_connection_states()
+    if reset:
+        log.info("api.browser_hosts_reset", count=reset)
     yield
     log.info("api.shutting_down")
     await container.aclose()
@@ -98,6 +107,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(sources_router)
     app.include_router(applications_router)
+    app.include_router(browser_hosts_router)
+    app.include_router(inbox_router)
     app.include_router(dashboard_router)
     app.include_router(settings_router)
 

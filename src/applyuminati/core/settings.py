@@ -29,6 +29,7 @@ from pydantic_settings import (
 )
 
 from applyuminati.core.errors import ConfigurationError
+from applyuminati.core.security import session_material
 
 DEFAULT_DATA_DIR = Path.home() / ".applyuminati"
 CONFIG_FILENAME = "config.toml"
@@ -190,6 +191,72 @@ class ServerSettings(BaseModel):
     web_dist: Path | None = None
 
 
+#: Addresses that only the local machine can reach. Binding to one of these is
+#: the difference between "a local tool" and "a service on the network".
+LOOPBACK_HOSTS: frozenset[str] = frozenset(
+    {"127.0.0.1", "::1", "localhost", "localhost.localdomain"}
+)
+
+
+class SecuritySettings(BaseModel):
+    """Authentication for the human-facing API and UI.
+
+    One operator, one password. Browser Hosts authenticate separately, with
+    their own credentials in their own table, because they are machines with a
+    much narrower permitted surface (see :mod:`applyuminati.browser.protocol`).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: When false, every route is open. Only legitimate for a loopback-only
+    #: deployment, and ``require_auth_for_exposure`` still refuses to serve an
+    #: open API on a network interface.
+    enabled: bool = True
+    #: Either a plaintext password (convenient in a compose file, still a
+    #: SecretStr so it cannot be logged or returned) or an encoded PBKDF2 hash
+    #: from ``applyuminati auth hash-password`` (correct on a shared host).
+    password: SecretStr | None = None
+    #: How long a login lasts. Long by default: this is a personal tool, and a
+    #: short session that expires mid-application is its own hazard.
+    session_ttl_hours: int = 720
+    session_cookie_name: str = "applyuminati_session"
+    csrf_cookie_name: str = "applyuminati_csrf"
+    csrf_header_name: str = "X-Applyuminati-CSRF"
+    #: Set to true when serving over HTTPS, which adds the Secure attribute so
+    #: the cookie never crosses a plaintext connection.
+    https_only: bool = False
+    #: Extra origins permitted to make state-changing requests. The bundled UI
+    #: is same-origin, so this is empty unless a separate front end is used.
+    trusted_origins: list[str] = Field(default_factory=list)
+    #: The deliberate act required to serve an unauthenticated API on a
+    #: non-loopback interface. Documented, logged, and never the default.
+    allow_unauthenticated_exposure: bool = False
+
+    def configured_secret(self) -> str | None:
+        """The configured password material, plaintext or encoded hash.
+
+        Returned rather than a freshly computed hash: PBKDF2 salts each call, so
+        hashing here would derive a different session key on every request and
+        invalidate every session immediately.
+        """
+        if self.password is None:
+            return None
+        return self.password.get_secret_value() or None
+
+    def session_key_material(self) -> str | None:
+        """Deterministic signing material for session and CSRF tokens."""
+        secret = self.configured_secret()
+        return None if secret is None else session_material(secret)
+
+    @property
+    def configured(self) -> bool:
+        return not self.enabled or self.configured_secret() is not None
+
+    @property
+    def session_ttl_seconds(self) -> int:
+        return self.session_ttl_hours * 3600
+
+
 class Settings(BaseSettings):
     """Root configuration object. Constructed once and injected."""
 
@@ -213,6 +280,7 @@ class Settings(BaseSettings):
     execution_mode: ExecutionMode = ExecutionMode.RESEARCH_ONLY
 
     server: ServerSettings = Field(default_factory=ServerSettings)
+    security: SecuritySettings = Field(default_factory=SecuritySettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     browser: BrowserSettings = Field(default_factory=BrowserSettings)
     agents: AgentSettings = Field(default_factory=AgentSettings)
@@ -248,7 +316,30 @@ class Settings(BaseSettings):
         if self.execution_mode is ExecutionMode.AUTONOMOUS_SUBMIT and not self.browser.preferred:
             msg = "execution_mode=autonomous_submit requires at least one browser backend"
             raise ValueError(msg)
+        if (
+            not self.security.enabled
+            and self.listens_beyond_loopback
+            and not self.security.allow_unauthenticated_exposure
+        ):
+            msg = (
+                f"refusing to serve an unauthenticated API on {self.server.host}: it holds "
+                "resumes, addresses, salary expectations and application answers. Set "
+                "APPLYUMINATI_SECURITY__PASSWORD, or bind to 127.0.0.1, or set "
+                "APPLYUMINATI_SECURITY__ALLOW_UNAUTHENTICATED_EXPOSURE=true if you have "
+                "put your own authentication in front of it."
+            )
+            raise ValueError(msg)
         return self
+
+    @property
+    def listens_beyond_loopback(self) -> bool:
+        """True when the HTTP server is reachable from another machine.
+
+        ``0.0.0.0`` counts. In Docker the container must bind it, which is why
+        docker-compose.yml publishes the port on 127.0.0.1 by default and this
+        property still forces a deliberate act to disable authentication.
+        """
+        return self.server.host not in LOOPBACK_HOSTS
 
     # -- derived paths ----------------------------------------------------
 
@@ -287,7 +378,17 @@ class Settings(BaseSettings):
 
     def public_dict(self) -> dict[str, Any]:
         """Settings safe to return from the API: secrets replaced by a flag."""
-        payload = self.model_dump(mode="json", exclude={"llm", "email"})
+        payload = self.model_dump(mode="json", exclude={"llm", "email", "security"})
+        # Explicitly rebuilt rather than dumped: SecretStr already masks itself,
+        # but an added field must not become public by default.
+        payload["security"] = {
+            "enabled": self.security.enabled,
+            "configured": self.security.configured,
+            "session_ttl_hours": self.security.session_ttl_hours,
+            "https_only": self.security.https_only,
+            "listens_beyond_loopback": self.listens_beyond_loopback,
+            "allow_unauthenticated_exposure": self.security.allow_unauthenticated_exposure,
+        }
         payload["llm"] = {
             "enabled": self.llm.enabled,
             "default_provider": self.llm.default_provider,
@@ -379,6 +480,7 @@ def default_source_settings(names: Sequence[str]) -> dict[str, SourceConfig]:
 __all__ = [
     "CONFIG_FILENAME",
     "DEFAULT_DATA_DIR",
+    "LOOPBACK_HOSTS",
     "AgentSettings",
     "BrowserSettings",
     "EmailAccountConfig",
@@ -387,6 +489,7 @@ __all__ = [
     "LLMSettings",
     "LogFormat",
     "ProviderConfig",
+    "SecuritySettings",
     "ServerSettings",
     "Settings",
     "SourceConfig",

@@ -25,6 +25,7 @@ import type {
   ApplicationDetail,
   ApplicationState,
   ApplicationSummary,
+  AuthStatus,
   BackendHealthResponse,
   DashboardResponse,
   DiscoverRequest,
@@ -84,6 +85,7 @@ export interface ApplicationFilters {
 // ---------------------------------------------------------------------------
 
 export const queryKeys = {
+  session: ["auth", "session"] as const,
   health: ["health"] as const,
   backendHealth: ["health", "backends"] as const,
   dashboard: ["dashboard"] as const,
@@ -95,6 +97,53 @@ export const queryKeys = {
   application: (applicationId: string) => ["applications", "detail", applicationId] as const,
   settings: ["settings"] as const,
 };
+
+// ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether this browser holds a session.
+ *
+ * Every other query depends on this one being resolved, because an
+ * unauthenticated app would otherwise fire a dozen requests that all 401 and
+ * paint a wall of red banners over the login form. `App` gates on it.
+ */
+export function useSession(): UseQueryResult<AuthStatus, ApiError> {
+  return useQuery<AuthStatus, ApiError>({
+    queryKey: queryKeys.session,
+    queryFn: ({ signal }) => get<AuthStatus>("/auth/session", undefined, signal),
+    // A session outliving its cookie shows up as 401s elsewhere, so this is
+    // re-checked periodically rather than trusted for the tab's whole lifetime.
+    refetchInterval: 5 * 60_000,
+    retry: false,
+  });
+}
+
+export function useLogin(): UseMutationResult<AuthStatus, ApiError, { password: string }> {
+  const client = useQueryClient();
+  return useMutation<AuthStatus, ApiError, { password: string }>({
+    mutationFn: (body) => post<AuthStatus>("/auth/login", body),
+    onSuccess: (status) => {
+      client.setQueryData(queryKeys.session, status);
+      // Nothing was fetchable before this point, so the whole cache is stale.
+      void client.invalidateQueries();
+    },
+  });
+}
+
+export function useLogout(): UseMutationResult<AuthStatus, ApiError, void> {
+  const client = useQueryClient();
+  return useMutation<AuthStatus, ApiError, void>({
+    mutationFn: () => post<AuthStatus>("/auth/logout"),
+    onSuccess: (status) => {
+      // Cleared rather than invalidated: refetching after logout would only
+      // produce 401s, and leaving the data cached would leave it on screen.
+      client.clear();
+      client.setQueryData(queryKeys.session, status);
+    },
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Health

@@ -24,6 +24,8 @@ from applyuminati.api.routers.jobs import router as jobs_router
 from applyuminati.api.routers.profile import router as profile_router
 from applyuminati.api.routers.settings import dashboard_router, settings_router
 from applyuminati.api.routers.sources import router as sources_router
+from applyuminati.api.security import AuthenticationMiddleware
+from applyuminati.api.security import router as auth_router
 from applyuminati.core.errors import ApplyuminatiError
 from applyuminati.core.logging import get_logger
 from applyuminati.core.settings import Settings
@@ -62,12 +64,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.add_middleware(
             CORSMiddleware,
             allow_origins=container.settings.server.cors_origins,
+            # Credentials are required for a separate front end to carry the
+            # session cookie, and allow_credentials forbids the "*" origin, so
+            # this list is always explicit.
+            allow_credentials=True,
             allow_methods=["*"],
             allow_headers=["*"],
         )
 
     app.add_exception_handler(ApplyuminatiError, applyuminati_error_handler)
 
+    # Added last so it runs first: Starlette applies middleware in reverse
+    # registration order, and authentication has to precede everything.
+    app.add_middleware(AuthenticationMiddleware, settings=container.settings)
+    if container.settings.security.enabled and not container.settings.security.configured:
+        log.warning(
+            "api.auth_not_configured",
+            detail=(
+                "no password set; the API will refuse requests. Set "
+                "APPLYUMINATI_SECURITY__PASSWORD or security.password in config.toml"
+            ),
+        )
+    if not container.settings.security.enabled:
+        log.warning(
+            "api.auth_disabled",
+            listens_beyond_loopback=container.settings.listens_beyond_loopback,
+            host=container.settings.server.host,
+        )
+
+    app.include_router(auth_router)
     app.include_router(health_router)
     app.include_router(profile_router)
     app.include_router(jobs_router)

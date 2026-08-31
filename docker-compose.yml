@@ -35,11 +35,24 @@ services:
     container_name: ${APPLYUMINATI_CONTAINER_NAME:-applyuminati}
     restart: unless-stopped
 
-    # Host port : container port. Change the left-hand side only; the internal
-    # port is driven by APPLYUMINATI_INTERNAL_PORT below and both the app and
-    # the healthcheck read the same value, so they cannot drift apart.
+    # Host address : host port : container port.
+    #
+    # The bind address defaults to 127.0.0.1, so a fresh stack is reachable from
+    # the machine running Docker and from nowhere else. This container holds
+    # resumes, addresses, salary expectations and application answers; publishing
+    # it on every interface by default would put all of that one port scan away
+    # from anyone on the same network.
+    #
+    # To reach it from other machines, set APPLYUMINATI_BIND_ADDRESS to 0.0.0.0
+    # and set APPLYUMINATI_PASSWORD below. See docs/deployment.md for the
+    # TLS/reverse-proxy setup that exposure over anything but a trusted LAN
+    # requires.
+    #
+    # Change the left-hand side only; the internal port is driven by
+    # APPLYUMINATI_INTERNAL_PORT and both the app and the healthcheck read the
+    # same value, so they cannot drift apart.
     ports:
-      - "${APPLYUMINATI_PORT:-8420}:${APPLYUMINATI_INTERNAL_PORT:-8000}"
+      - "${APPLYUMINATI_BIND_ADDRESS:-127.0.0.1}:${APPLYUMINATI_PORT:-8420}:${APPLYUMINATI_INTERNAL_PORT:-8000}"
 
     # All persistent state -- SQLite database, artifacts, generated documents,
     # config.toml -- lives here. A named volume, not a bind mount, so the stack
@@ -71,9 +84,25 @@ services:
 
       # --- http server --------------------------------------------------
       # 0.0.0.0 is required inside a container: the default 127.0.0.1 would only
-      # be reachable from within the container itself.
+      # be reachable from within the container itself. What limits reach is the
+      # published bind address under `ports:` above, not this.
       APPLYUMINATI_SERVER__HOST: ${APPLYUMINATI_SERVER__HOST:-0.0.0.0}
       APPLYUMINATI_SERVER__PORT: "${APPLYUMINATI_INTERNAL_PORT:-8000}"
+
+      # --- authentication -----------------------------------------------
+      # Set this. Until it is set the API answers /api/v1/health and the login
+      # endpoint and refuses everything else, because an open API here means an
+      # open filing cabinet of resumes and salary expectations.
+      #
+      # A plaintext password is accepted for convenience. On a host where other
+      # people can read the container environment, run
+      #   docker run --rm ghcr.io/spencerthayer/applyuminati cli auth hash-password
+      # and paste the resulting pbkdf2_sha256$... string here instead.
+      APPLYUMINATI_SECURITY__PASSWORD: ${APPLYUMINATI_PASSWORD:-}
+
+      # Adds the Secure cookie attribute. Turn this on when a reverse proxy
+      # terminates TLS in front of the container.
+      APPLYUMINATI_SECURITY__HTTPS_ONLY: "${APPLYUMINATI_HTTPS_ONLY:-false}"
 
       # --- LLM ----------------------------------------------------------
       # true means "use LLM enrichment when a provider is configured". With no

@@ -183,9 +183,29 @@ interface RequestOptions {
 
 type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
+/** Name of the readable cookie holding the CSRF token, set at login. */
+const CSRF_COOKIE = "applyuminati_csrf";
+/** Header the backend checks it against. Must match `SecuritySettings`. */
+const CSRF_HEADER = "X-Applyuminati-CSRF";
+
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/**
+ * Read the CSRF cookie.
+ *
+ * The session cookie is HttpOnly and deliberately unreadable here; this one is
+ * not, because the double-submit check requires script to echo it in a header.
+ * A cross-site page cannot read it, which is what makes the check work.
+ */
+export function readCsrfToken(): string | null {
+  const match = document.cookie.match(new RegExp(`(?:^|; )${CSRF_COOKIE}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 async function request<T>(method: Method, path: string, options: RequestOptions = {}): Promise<T> {
   const url = `${API_BASE}${path}${buildQuery(options.params)}`;
   const hasBody = options.body !== undefined;
+  const csrf = UNSAFE_METHODS.has(method) ? readCsrfToken() : null;
 
   let response: Response;
   try {
@@ -194,8 +214,12 @@ async function request<T>(method: Method, path: string, options: RequestOptions 
       headers: {
         Accept: "application/json",
         ...(hasBody ? { "Content-Type": "application/json" } : {}),
+        ...(csrf ? { [CSRF_HEADER]: csrf } : {}),
       },
       body: hasBody ? JSON.stringify(options.body) : undefined,
+      // Same-origin is the default, but stated explicitly because the session
+      // cookie is the only credential and losing it would look like a 401 bug.
+      credentials: "same-origin",
       signal: options.signal,
     });
   } catch (error) {

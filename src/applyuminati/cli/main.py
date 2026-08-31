@@ -132,6 +132,67 @@ def serve(
     )
 
 
+# -- auth -----------------------------------------------------------------
+
+
+auth_app = typer.Typer(help="Manage access to the local API and UI.")
+app.add_typer(auth_app, name="auth")
+
+
+@auth_app.command("hash-password")
+def auth_hash_password(
+    password: str = typer.Option(
+        ...,
+        prompt=True,
+        confirmation_prompt=True,
+        hide_input=True,
+        help="Read from a prompt so it never lands in shell history.",
+    ),
+) -> None:
+    """Print a PBKDF2 hash to use as the configured password.
+
+    Use this instead of a plaintext password wherever other people can read the
+    process environment or the compose file: a shared host, a NAS, a machine with
+    other users. The hash verifies logins and cannot be replayed as the password.
+    """
+    from applyuminati.core.security import WeakPasswordError, hash_password
+
+    try:
+        encoded = hash_password(password)
+    except WeakPasswordError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print("\n[green]Add this to config.toml:[/green]")
+    console.print(f'\n[security]\npassword = "{encoded}"\n')
+    console.print("[green]Or export it:[/green]")
+    console.print(f"\nAPPLYUMINATI_SECURITY__PASSWORD='{encoded}'\n")
+
+
+@auth_app.command("status")
+def auth_status() -> None:
+    """Report whether the API is protected, and how far it is reachable."""
+    settings = get_settings()
+    security = settings.security
+    table = Table(title="Access control")
+    table.add_column("Property")
+    table.add_column("Value")
+    table.add_row("Authentication", "enabled" if security.enabled else "DISABLED")
+    table.add_row("Password", "set" if security.configured_secret() else "NOT SET")
+    table.add_row("Bind address", settings.server.host)
+    table.add_row(
+        "Reachable from other machines",
+        "yes" if settings.listens_beyond_loopback else "no (loopback only)",
+    )
+    table.add_row("Secure cookies (HTTPS)", "yes" if security.https_only else "no")
+    table.add_row("Session lifetime", f"{security.session_ttl_hours}h")
+    console.print(table)
+    if security.enabled and not security.configured_secret():
+        console.print(
+            "[yellow]The API will refuse every request except health and login "
+            "until a password is set. Run: applyuminati auth hash-password[/yellow]"
+        )
+
+
 # -- profile --------------------------------------------------------------
 
 

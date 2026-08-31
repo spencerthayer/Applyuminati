@@ -5,17 +5,27 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from applyuminati.api.app import create_app
+from applyuminati.core.settings import SecuritySettings
 from applyuminati.db.session import set_database
 from applyuminati.services.container import set_container
 
 
-def _client(database):
+def _client(database, **security):
     # Force a fresh ServiceContainer bound to this test's database: both are
     # process-wide singletons that otherwise survive across tests in the same
     # pytest process.
+    #
+    # Authentication is off by default here so these tests stay about routing
+    # and payloads. tests/test_security.py is where it is turned on. The bind
+    # address stays loopback, which is the only configuration where Settings
+    # permits an unauthenticated API at all.
     set_container(None)
     set_database(database)
-    app = create_app()
+    app = create_app(
+        database.settings.model_copy(
+            update={"security": SecuritySettings(enabled=False, **security)}
+        )
+    )
     return TestClient(app)
 
 

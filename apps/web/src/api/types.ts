@@ -207,6 +207,23 @@ export interface Page<ItemT> {
 }
 
 // ---------------------------------------------------------------------------
+// Authentication
+// ---------------------------------------------------------------------------
+
+/** `applyuminati.api.security.AuthStatus` */
+export interface AuthStatus {
+  /** False when authentication is switched off entirely. */
+  required: boolean;
+  /** False when no password has been set on the instance yet. */
+  configured: boolean;
+  authenticated: boolean;
+  /** Present only when authenticated; echoed back in the CSRF header. */
+  csrf_token?: string | null;
+  expires_at?: number | null;
+  listens_beyond_loopback: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
 

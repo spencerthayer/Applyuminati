@@ -1,8 +1,10 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { useHealth } from "../api/hooks";
+import { useHealth, useLogout, useSession } from "../api/hooks";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { data: health } = useHealth();
+  const { data: session } = useSession();
+  const logout = useLogout();
   const status = health?.status ?? "—";
 
   return (
@@ -16,7 +18,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>Settings</NavLink>
         </nav>
         <div style={{ padding: "16px", fontSize: 12, color: "var(--text-muted)" }}>
-          API: {status}
+          <div>API: {status}</div>
+          {session?.required ? (
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => logout.mutate()}
+              disabled={logout.isPending}
+            >
+              Sign out
+            </button>
+          ) : null}
         </div>
       </aside>
       <main className="main">{children ?? <Outlet />}</main>

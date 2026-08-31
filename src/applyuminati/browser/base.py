@@ -34,12 +34,43 @@ from applyuminati.core.registry import HealthReport, PluginDescriptor, Registry
 
 
 class BrowserCapability(StrEnum):
+    """What a browser backend can actually do.
+
+    Backends are not interchangeable and pretending otherwise is how an
+    application gets half-filled in a throwaway container that could never have
+    signed in. Every backend advertises this set; every workflow declares the
+    subset it needs (see :mod:`applyuminati.browser.capabilities`), and
+    selection is a set operation rather than a hope.
+
+    The three session-related members are genuinely distinct and the difference
+    matters when choosing a backend for an ATS portal:
+
+    * :attr:`PERSISTENT_LOGIN` — cookies and tokens survive between sessions,
+      so signing in once is enough. A Playwright ``storage_state`` file gives
+      this much.
+    * :attr:`PERSISTENT_SESSION` — the *browsing context itself* outlives our
+      process, so a restart can re-enter the page the attempt was left on. An
+      ego lite task space gives this; a Playwright context does not.
+    * :attr:`AUTHENTICATED_USER_PROFILE` — the browser is the human's own
+      profile, already signed into the employer's SSO, with their history and
+      their extensions. Nothing we drive ourselves can synthesise this, and it
+      is why handing an authentication wall to the user actually works.
+    """
+
     NAVIGATE = "navigate"
     SEMANTIC_SNAPSHOT = "semantic_snapshot"
     SCREENSHOT = "screenshot"
     FILE_UPLOAD = "file_upload"
-    #: Reuses the human's existing logged-in browser session.
+    #: Files the site sends us (an offer PDF, a generated application copy) can
+    #: be captured to disk rather than lost to a native download dialog.
+    DOWNLOADS = "downloads"
+    #: Credentials survive between sessions, so a login is not repeated.
     PERSISTENT_LOGIN = "persistent_login"
+    #: The browsing context outlives our process, so an attempt can be resumed
+    #: after a restart instead of started again.
+    PERSISTENT_SESSION = "persistent_session"
+    #: The browser is the human's own signed-in profile, not one we built.
+    AUTHENTICATED_USER_PROFILE = "authenticated_user_profile"
     #: Can hand control to the user and take it back.
     HUMAN_HANDOFF = "human_handoff"
     HEADLESS = "headless"

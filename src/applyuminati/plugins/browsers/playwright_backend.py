@@ -34,6 +34,14 @@ log = get_logger(__name__)
 
 __all__ = ["PLUGIN", "PlaywrightBackend", "PlaywrightSession"]
 
+#: What this backend can do regardless of configuration.
+#:
+#: Notably absent: HUMAN_HANDOFF, PERSISTENT_SESSION and
+#: AUTHENTICATED_USER_PROFILE. A browser we launched ourselves is not the user's
+#: signed-in profile, its context dies with the process, and there is no way to
+#: hand a container's browser to a person or to learn when they are done. Those
+#: absences are the point: they are what stops an authenticated application from
+#: being routed here.
 _CAPABILITIES = frozenset(
     {
         BrowserCapability.NAVIGATE,
@@ -46,14 +54,25 @@ _CAPABILITIES = frozenset(
     }
 )
 
+#: Earned only when ``browser.playwright_storage_state`` is set, because that is
+#: the only configuration in which cookies are loaded and saved.
+_STORAGE_CAPABILITIES = frozenset({BrowserCapability.PERSISTENT_LOGIN})
 
-def _metadata() -> BrowserMetadata:
+
+def _metadata(settings: Settings | None = None) -> BrowserMetadata:
+    capabilities = _CAPABILITIES
+    if settings is not None and settings.browser.playwright_storage_state is not None:
+        capabilities = capabilities | _STORAGE_CAPABILITIES
     return BrowserMetadata(
         slug="playwright",
         name="Playwright",
-        capabilities=_CAPABILITIES,
+        capabilities=capabilities,
         homepage="https://playwright.dev",
-        notes="Portable default. Run `playwright install chromium` after pip install.",
+        notes=(
+            "Portable default. Run `playwright install chromium` after pip install. "
+            "Cannot hand its browser to a person, so applications needing a human "
+            "at an authentication wall are not routed here."
+        ),
     )
 
 
@@ -166,21 +185,62 @@ class PlaywrightSession(BrowserSession):
         )
 
     async def request_human_control(self, instruction: str) -> ActionResult:
-        self._owner = ControlOwner.DELEGATED_TO_USER
-        return ActionResult(ok=True, action="handoff", detail=instruction)
+        """Refuse, honestly.
+
+        This used to set the owner and return success, which is worse than not
+        having handoff at all: the caller believes a person is now signing in,
+        and nobody is. There is no browser window to give away in a container,
+        and even headed there is no ownership signal to tell us the human is
+        finished, so we would have to guess with a timer and race them.
+
+        Handoff comes from :attr:`BrowserCapability.HUMAN_HANDOFF`, which this
+        backend does not advertise; selection therefore never routes an
+        application needing it here. Reaching this method means a workflow asked
+        anyway, and a clear refusal is what lets it escalate correctly.
+        """
+        return ActionResult(
+            ok=False,
+            action="request_human_control",
+            detail=(
+                "the playwright backend cannot hand its browser to a person; "
+                "run a Browser Host with an interactive backend for this application"
+            ),
+            condition=PageCondition.UNKNOWN,
+        )
 
     async def wait_for_control(self, *, timeout_seconds: float) -> ActionResult:
-        # Playwright has no built-in handoff; this is a timeout-based stub
-        # that real usage would replace with a UI signal.
-        self._owner = ControlOwner.AGENT
-        return ActionResult(ok=True, action="wait_for_control")
+        """Nothing to wait for: this backend never gives control away."""
+        if self._owner is ControlOwner.AGENT:
+            return ActionResult(ok=True, action="wait_for_control", detail="already the owner")
+        return ActionResult(
+            ok=False,
+            action="wait_for_control",
+            detail="the playwright backend has no handoff to return from",
+        )
 
     async def close(self) -> None:
         try:
+            await self._save_storage_state()
             await self._page.close()
             await self._browser.close()
         except Exception:
             log.debug("playwright.close_failed", exc_info=True)
+
+    async def _save_storage_state(self) -> None:
+        """Persist cookies so the PERSISTENT_LOGIN claim is actually true.
+
+        The context was loading ``storage_state`` and never writing it, so a
+        login survived exactly as long as the process. The capability is now
+        advertised only when this path is configured, and it has to be earned.
+        """
+        destination = self._settings.browser.playwright_storage_state
+        if destination is None:
+            return
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            await self._page.context.storage_state(path=str(destination))
+        except Exception:
+            log.warning("playwright.storage_state_not_saved", path=str(destination))
 
     async def _extract_controls(self) -> list[PageElement]:
         elements: list[PageElement] = []
@@ -253,7 +313,7 @@ class PlaywrightBackend(BrowserBackend):
 
     @property
     def metadata(self) -> BrowserMetadata:
-        return _metadata()
+        return _metadata(self._settings)
 
     async def health(self) -> HealthReport:
         try:

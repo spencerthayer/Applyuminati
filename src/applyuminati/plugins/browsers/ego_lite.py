@@ -43,7 +43,6 @@ import hashlib
 import json
 import os
 import shutil
-import sys
 import time
 from dataclasses import dataclass
 from enum import StrEnum
@@ -65,6 +64,7 @@ from applyuminati.browser.base import (
 from applyuminati.core.clock import utcnow
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.logging import get_logger
+from applyuminati.core.platform import current_platform
 from applyuminati.core.registry import HealthReport, HealthState
 from applyuminati.core.settings import Settings
 from applyuminati.plugins.browsers import (
@@ -110,18 +110,28 @@ METADATA = BrowserMetadata(
             BrowserCapability.SCREENSHOT,
             BrowserCapability.FILE_UPLOAD,
             BrowserCapability.PERSISTENT_LOGIN,
+            # A task space outlives our process, so an attempt interrupted by a
+            # restart can be re-entered where it stopped.
+            BrowserCapability.PERSISTENT_SESSION,
+            # The distinguishing capability: this is the human's own browser,
+            # already through the employer's SSO. Nothing we drive ourselves can
+            # reproduce it, and it is what makes handoff actually work.
+            BrowserCapability.AUTHENTICATED_USER_PROFILE,
             BrowserCapability.HUMAN_HANDOFF,
             BrowserCapability.JAVASCRIPT_EVAL,
             BrowserCapability.MULTI_TAB,
         }
     ),
     platforms=frozenset({"darwin"}),
-    homepage="https://github.com/ego-browser/ego-browser",
+    homepage="https://github.com/citrolabs/ego-lite",
     notes=(
-        "Closed-source macOS app; the open-source part is the ego-browser Node "
-        "helper. Driven by piping a JS program into `ego-browser nodejs`. "
-        "Inherits the user's real logins, which is why it is preferred for "
-        "authenticated ATS portals."
+        "macOS desktop app. The app itself is closed, but the ego-browser Node "
+        "harness in citrolabs/ego-lite documents the integration surface: task "
+        "spaces, persistent state, semantic page operations, site learnings, "
+        "and the ownership/handoff primitives. Driven by piping a JS program "
+        "into `ego-browser nodejs`. Runs in the user's real browser identity, "
+        "which is why it is preferred for authenticated ATS portals and why no "
+        "evasion of site controls is acceptable here."
     ),
 )
 
@@ -847,15 +857,16 @@ class EgoLiteBackend:
         """Walk the full detection ladder, ending in a real smoke test."""
         started = time.perf_counter()
 
-        if sys.platform != "darwin":
+        platform = current_platform()
+        if platform != "darwin":
             return HealthReport(
                 plugin=SLUG,
                 state=HealthState.NOT_INSTALLED,
                 detail=(
-                    f"ego lite is a macOS-only app; this host is {sys.platform!r}. "
+                    f"ego lite is a macOS-only app; this host is {platform!r}. "
                     "Use the playwright backend instead."
                 ),
-                facts={"platform": sys.platform, "supported_platforms": ["darwin"]},
+                facts={"platform": platform, "supported_platforms": ["darwin"]},
                 checked_at=utcnow().timestamp(),
             )
 

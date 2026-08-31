@@ -183,7 +183,7 @@ class AttemptService:
             # Leave the intervention open. Resolving it would drop the item
             # from the inbox while the user still has the browser.
             attempt.record_event(
-                AttemptEventKind.INTERVENTION_RESOLVED,
+                AttemptEventKind.CONTROL_KEPT,
                 "user is keeping browser control",
                 resolution=resolution.value,
             )
@@ -233,14 +233,19 @@ class AttemptService:
         manager: BrowserHostManager | None,
     ) -> bool:
         """Take the browser back before a worker may act. Failure stays paused."""
-        skip = (
-            not intervention.requires_browser_handoff
-            or manager is None
+        if not intervention.requires_browser_handoff:
+            return True
+        unavailable = (
+            manager is None
             or not attempt.browser_host_id
             or not manager.is_connected(attempt.browser_host_id)
         )
-        if skip:
-            return True
+        if unavailable:
+            attempt.record_event(
+                AttemptEventKind.INTERVENTION_RECLAIM_FAILED,
+                "Browser Host unavailable; intervention remains open",
+            )
+            return False
         session = await self.bind_session(attempt, manager=manager)
         detail: str | None = None
         if session is None:
@@ -254,7 +259,7 @@ class AttemptService:
                 if owner is not ControlOwner.AGENT:
                     detail = "browser is still owned by the user after reclaim"
         if detail is not None:
-            attempt.record_event(AttemptEventKind.INTERVENTION_RESOLVED, detail)
+            attempt.record_event(AttemptEventKind.INTERVENTION_RECLAIM_FAILED, detail)
             return False
         return True
 

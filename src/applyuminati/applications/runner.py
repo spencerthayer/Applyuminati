@@ -39,6 +39,7 @@ __all__ = [
     "CONDITION_REASONS",
     "SUBMISSION_COMPLETES",
     "advance_questions",
+    "agent_still_owns",
     "handle_submission_evidence",
     "handoff_for",
     "mark_submission_attempted",
@@ -319,6 +320,20 @@ async def run_form_application(
     """Shared Greenhouse/Lever form flow. Drivers only supply URL and submit matching."""
     attempt.driver = slug
     attempt.driver_version = version
+    if not await agent_still_owns(session):
+        intervention = attempt.open_intervention(
+            InterventionReason.UNKNOWN_INTERACTION,
+            (
+                "The browser is still owned by the user. "
+                "Finish in the browser, then choose Done, continue."
+            ),
+            requires_browser_handoff=True,
+        )
+        return DriverOutcome(
+            kind=DriverOutcomeKind.WAITING_FOR_HUMAN,
+            attempt=attempt,
+            intervention=intervention,
+        )
     attempt.workflow_state = WorkflowState.RUNNING
     if attempt.events == []:
         attempt.record_event(AttemptEventKind.STARTED, started_message)

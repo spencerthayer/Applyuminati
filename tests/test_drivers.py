@@ -368,6 +368,37 @@ async def test_uncertain_evidence_on_restart_does_not_click_again() -> None:
     )
 
 
+async def test_run_refuses_to_act_while_the_user_owns_the_browser() -> None:
+    apply_url = "https://boards.greenhouse.io/acme/jobs/1"
+    form = _greenhouse_form(apply_url)
+    session = FakeSession({apply_url: form})
+    session._owner = ControlOwner.DELEGATED_TO_USER
+    job = build_job(
+        source="greenhouse",
+        tier=SourceTier.DIRECT_ATS,
+        source_job_id="1",
+        url=apply_url,
+        title="Engineer",
+        company="Acme",
+    )
+    attempt = ApplicationAttempt(application_id="a", job_id="j", driver="greenhouse")
+    outcome = await GreenhouseDriver().run(
+        attempt,
+        session,
+        DriverContext(job=job, profile=CareerProfile(), mode=ExecutionMode.AUTONOMOUS_SUBMIT),
+    )
+    assert outcome.kind is DriverOutcomeKind.WAITING_FOR_HUMAN
+    assert outcome.intervention is not None
+    assert outcome.intervention.reason is InterventionReason.UNKNOWN_INTERACTION
+    assert outcome.intervention.requires_browser_handoff is True
+    assert attempt.workflow_state is WorkflowState.WAITING_FOR_HUMAN
+    assert session.clicks == []
+    assert not any(
+        checkpoint.kind == CheckpointKind.APPLICATION_OPENED.value
+        for checkpoint in attempt.checkpoints
+    )
+
+
 async def test_likely_evidence_is_enough_to_complete() -> None:
     apply_url = "https://boards.greenhouse.io/acme/jobs/1"
     form = _greenhouse_form(apply_url)

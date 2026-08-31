@@ -131,6 +131,8 @@ class AttemptEventKind(StrEnum):
     CHECKPOINT = "checkpoint"
     INTERVENTION_OPENED = "intervention_opened"
     INTERVENTION_RESOLVED = "intervention_resolved"
+    INTERVENTION_RECLAIM_FAILED = "intervention_reclaim_failed"
+    CONTROL_KEPT = "control_kept"
     FAILURE = "failure"
     RESUMED = "resumed"
     SUBMITTED = "submitted"

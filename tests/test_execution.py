@@ -23,6 +23,7 @@ from applyuminati.core.logging import get_logger
 from applyuminati.core.models.browser_host import BrowserHostRecord
 from applyuminati.core.models.execution import (
     ApplicationAttempt,
+    AttemptEventKind,
     InterventionReason,
     InterventionResolution,
     WorkflowState,
@@ -136,6 +137,10 @@ async def test_keep_control_does_not_resume(database) -> None:
         kept = await service.resolve(attempt.id, opened.id, InterventionResolution.KEEP_CONTROL)
         assert kept.workflow_state is WorkflowState.WAITING_FOR_HUMAN
         assert kept.pending_intervention is not None
+        assert kept.events[-1].kind is AttemptEventKind.CONTROL_KEPT
+        assert not any(
+            event.kind is AttemptEventKind.INTERVENTION_RESOLVED for event in kept.events
+        )
         queued = await repos.tasks.list()
         assert [task for task in queued if task.kind == APPLICATION_ATTEMPT_KIND] == []
 
@@ -149,7 +154,11 @@ async def test_done_continue_releases_the_pause(database) -> None:
         attempt = await service.create(
             application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
         )
-        attempt.open_intervention(InterventionReason.MFA_REQUIRED, "Complete MFA")
+        attempt.open_intervention(
+            InterventionReason.AMBIGUOUS_QUESTION,
+            "Question needs an answer",
+            requires_browser_handoff=False,
+        )
         await repos.attempts.save(attempt)
         opened = attempt.pending_intervention
         assert opened is not None
@@ -175,7 +184,11 @@ async def test_repeated_resolution_after_task_completion_does_not_enqueue_again(
         attempt = await service.create(
             application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
         )
-        attempt.open_intervention(InterventionReason.MFA_REQUIRED, "Complete MFA")
+        attempt.open_intervention(
+            InterventionReason.AMBIGUOUS_QUESTION,
+            "Question needs an answer",
+            requires_browser_handoff=False,
+        )
         await repos.attempts.save(attempt)
         opened = attempt.pending_intervention
         assert opened is not None
@@ -321,6 +334,10 @@ async def test_failed_reclaim_keeps_the_intervention_open(database) -> None:
             )
             assert kept.workflow_state is WorkflowState.WAITING_FOR_HUMAN
             assert kept.pending_intervention is not None
+            assert kept.events[-1].kind is AttemptEventKind.INTERVENTION_RECLAIM_FAILED
+            assert not any(
+                event.kind is AttemptEventKind.INTERVENTION_RESOLVED for event in kept.events
+            )
             queued = [
                 task for task in await repos.tasks.list() if task.kind == APPLICATION_ATTEMPT_KIND
             ]
@@ -329,6 +346,62 @@ async def test_failed_reclaim_keeps_the_intervention_open(database) -> None:
         pump.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await pump
+
+
+async def test_offline_host_keeps_handoff_paused_until_reconnect(database) -> None:
+    job = _job()
+    manager = BrowserHostManager()
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1",
+            job=job,
+            profile=None,
+            mode=ExecutionMode.FILL_NO_SUBMIT,
+            browser_host_id=HOST_ID,
+        )
+        attempt.browser_session_id = "s1"
+        attempt.open_intervention(InterventionReason.AUTHENTICATION_REQUIRED, "Sign in")
+        await repos.attempts.save(attempt)
+        opened = attempt.pending_intervention
+        assert opened is not None
+        paused = await service.resolve(
+            attempt.id,
+            opened.id,
+            InterventionResolution.DONE_CONTINUE,
+            manager=manager,
+        )
+        assert paused.workflow_state is WorkflowState.WAITING_FOR_HUMAN
+        assert paused.pending_intervention is not None
+        assert paused.pending_intervention.id == opened.id
+        assert paused.events[-1].kind is AttemptEventKind.INTERVENTION_RECLAIM_FAILED
+        assert paused.events[-1].message == "Browser Host unavailable; intervention remains open"
+        assert [
+            task for task in await repos.tasks.list() if task.kind == APPLICATION_ATTEMPT_KIND
+        ] == []
+
+        live, connection = await _attach(manager)
+        live.open_sessions.add("s1")
+        pump = await _answer_host(manager, live, connection, reclaim_ok=True)
+        try:
+            resumed = await service.resolve(
+                attempt.id,
+                opened.id,
+                InterventionResolution.DONE_CONTINUE,
+                manager=manager,
+            )
+            assert resumed.workflow_state is WorkflowState.PENDING
+            assert resumed.pending_intervention is None
+            queued = [
+                task for task in await repos.tasks.list() if task.kind == APPLICATION_ATTEMPT_KIND
+            ]
+            assert len(queued) == 1
+        finally:
+            pump.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await pump
 
 
 async def test_hosted_click_uses_the_caller_idempotency_key() -> None:
@@ -484,7 +557,11 @@ async def test_attempt_handler_releases_the_queue_on_human_pause(database) -> No
         attempt = await service.create(
             application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
         )
-        attempt.open_intervention(InterventionReason.MFA_REQUIRED, "Complete MFA")
+        attempt.open_intervention(
+            InterventionReason.AMBIGUOUS_QUESTION,
+            "Question needs an answer",
+            requires_browser_handoff=False,
+        )
         await repos.attempts.save(attempt)
         opened = attempt.pending_intervention
         assert opened is not None

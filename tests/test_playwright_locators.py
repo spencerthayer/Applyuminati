@@ -14,6 +14,7 @@ from applyuminati.plugins.browsers.playwright_backend import (
     PlaywrightSession,
     build_playwright_locator,
     elements_from_metadata,
+    radio_answer_matches,
 )
 from applyuminati.plugins.browsers.shared import questions_from_elements
 
@@ -56,6 +57,16 @@ def test_radio_uses_name_and_value() -> None:
         used=set(),
     )
     assert locator == '[name="auth"][value="yes"]'
+
+
+def test_radio_answer_matches_value_or_label() -> None:
+    assert radio_answer_matches(option_value="yes", option_label="Yes", answer="yes")
+    assert radio_answer_matches(
+        option_value="yes",
+        option_label="Authorized to work",
+        answer="Authorized to work",
+    )
+    assert not radio_answer_matches(option_value="yes", option_label="Yes", answer="no")
 
 
 def test_anchor_nth_fallback_matches_href_scan() -> None:
@@ -243,6 +254,11 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         )
         assert values[:2] == ["alpha", "beta"]
         assert await page.locator("#first").input_value() == "Ada"
+
+        auth = next(element for element in observation.elements if element.name == "auth")
+        picked = await session.fill_field(auth.locator, "no")
+        assert picked.ok
+        assert await page.locator('input[name="auth"][value="no"]').is_checked()
 
         question_texts = {question.text for question in observation.questions}
         roles = {element.label: element.role for element in observation.elements if element.label}

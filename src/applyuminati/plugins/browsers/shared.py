@@ -172,14 +172,10 @@ _APPLICANT_INPUT_ROLES: frozenset[ElementRole] = frozenset(
         ElementRole.RADIO,
     }
 )
-_SEARCH_RE = re.compile(r"\bsearch\b", re.I)
 
 
 def _is_search_control(element: PageElement) -> bool:
-    if element.input_type == "search":
-        return True
-    haystack = " ".join(part for part in (element.label, element.name, element.placeholder) if part)
-    return bool(_SEARCH_RE.search(haystack))
+    return element.input_type == "search"
 
 
 _ROLE_QUESTION_KINDS: dict[ElementRole, QuestionKind] = {

@@ -83,6 +83,20 @@ def test_buttons_links_uploads_and_search_are_not_questions() -> None:
     assert questions == []
 
 
+def test_essay_mentioning_search_is_still_a_question() -> None:
+    questions = questions_from_elements(
+        [
+            PageElement(
+                locator="#essay",
+                role=ElementRole.TEXTAREA,
+                label="Describe your job search strategy",
+            )
+        ]
+    )
+    assert len(questions) == 1
+    assert questions[0].text == "Describe your job search strategy"
+
+
 def test_unlabeled_input_is_not_a_question() -> None:
     questions = questions_from_elements(
         [PageElement(locator="#x", role=ElementRole.TEXTBOX, name="x")]

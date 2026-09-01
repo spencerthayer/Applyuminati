@@ -47,6 +47,7 @@ __all__ = [
     "PlaywrightSession",
     "build_playwright_locator",
     "elements_from_metadata",
+    "radio_answer_matches",
 ]
 
 #: What this backend can do regardless of configuration.
@@ -171,6 +172,18 @@ def build_playwright_locator(control: PlaywrightControl, *, used: set[str]) -> s
         if candidate not in used:
             return candidate
     return _nth_selector(control)
+
+
+def radio_answer_matches(
+    *, option_value: str | None, option_label: str | None, answer: str
+) -> bool:
+    """True when ``answer`` is this radio's value or accessible name."""
+    needle = answer.strip().casefold()
+    if not needle:
+        return False
+    if option_value and option_value.strip().casefold() == needle:
+        return True
+    return bool(option_label and option_label.strip().casefold() == needle)
 
 
 #: Playwright-only metadata scrape. Locator strings are built in Python.
@@ -392,9 +405,53 @@ class PlaywrightSession(BrowserSession):
             elements = [el for el in elements if el.role is role]
         return elements
 
+    async def _fill_radio(self, locator: str, value: str, start: float) -> ActionResult:
+        first = self._page.locator(locator).first
+        name = await first.get_attribute("name")
+        group = (
+            self._page.locator(f'input[type="radio"]{_css_attr("name", name)}')
+            if name
+            else self._page.locator(locator)
+        )
+        count = await group.count()
+        for index in range(count):
+            radio = group.nth(index)
+            option_value = await radio.get_attribute("value")
+            option_label = await radio.evaluate(
+                """el => {
+                  const aria = (el.getAttribute('aria-label') || '').trim();
+                  if (aria) return aria;
+                  if (el.id) {
+                    const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+                    if (lab) return (lab.innerText || '').trim();
+                  }
+                  const wrap = el.closest('label');
+                  return wrap ? (wrap.innerText || '').trim() : '';
+                }"""
+            )
+            if not radio_answer_matches(
+                option_value=option_value,
+                option_label=option_label or None,
+                answer=value,
+            ):
+                continue
+            await radio.check()
+            return ActionResult(
+                ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
+            )
+        return ActionResult(
+            ok=False,
+            action="fill",
+            detail=f"no radio matching {value!r}",
+            duration_ms=(time.perf_counter() - start) * 1000,
+        )
+
     async def fill_field(self, locator: str, value: str) -> ActionResult:
         start = time.perf_counter()
         try:
+            input_type = await self._page.locator(locator).first.get_attribute("type")
+            if (input_type or "").lower() == "radio":
+                return await self._fill_radio(locator, value, start)
             await self._page.fill(locator, value)
             return ActionResult(
                 ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000

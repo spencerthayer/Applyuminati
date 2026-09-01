@@ -120,10 +120,10 @@ def _css_attr(name: str, value: str) -> str:
 
 
 def _nth_group(control: PlaywrightControl) -> str:
-    if control.input_type == "contenteditable":
-        return "contenteditable"
     if control.aria_role:
         return f"role:{control.aria_role}"
+    if control.input_type == "contenteditable":
+        return "contenteditable"
     if control.tag == "input":
         if control.input_type:
             return f"input:{control.input_type}"
@@ -136,11 +136,11 @@ def _nth_group(control: PlaywrightControl) -> str:
 def _nth_selector(control: PlaywrightControl) -> str:
     """Selector whose nth index is counted only among matching visible nodes."""
     n = control.index_in_type
-    if control.input_type == "contenteditable":
-        base = ":is([contenteditable='true'], [contenteditable='']):not([role])"
-    elif control.aria_role:
+    if control.aria_role:
         escaped = control.aria_role.replace("'", "\\'")
         base = f"[role='{escaped}']"
+    elif control.input_type == "contenteditable":
+        base = ":is([contenteditable='true'], [contenteditable='']):not([role])"
     elif control.tag == "input" and control.input_type:
         escaped = control.input_type.replace("'", "\\'")
         base = f"input[type='{escaped}']:not([role])"
@@ -412,6 +412,8 @@ def _classify_control(row: dict[str, Any]) -> tuple[ElementRole, str | None]:
         input_type = input_type or "radio"
     elif aria_role == "combobox":
         input_type = input_type or "combobox"
+    elif aria_role == "searchbox":
+        input_type = "search"
     elif aria_role == "button":
         role = ElementRole.BUTTON
     else:

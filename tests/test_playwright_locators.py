@@ -78,6 +78,41 @@ def test_anchor_nth_fallback_matches_href_scan() -> None:
     assert locator == "a[href]:not([role]) >> visible=true >> nth=0"
 
 
+def test_contenteditable_with_role_uses_role_nth() -> None:
+    elements = elements_from_metadata(
+        [
+            {
+                "tag": "div",
+                "contenteditable": True,
+                "ariaRole": "textbox",
+                "accessibleName": "Bio",
+            },
+            {"tag": "div", "contenteditable": True, "accessibleName": "Notes"},
+        ]
+    )
+    by_label = {element.label: element.locator for element in elements}
+    assert by_label["Bio"] == "[role='textbox'] >> visible=true >> nth=0"
+    expected = (
+        ":is([contenteditable='true'], [contenteditable='']):not([role]) >> visible=true >> nth=0"
+    )
+    assert by_label["Notes"] == expected
+
+
+def test_searchbox_role_is_not_a_question() -> None:
+    elements = elements_from_metadata(
+        [
+            {
+                "tag": "input",
+                "type": "text",
+                "ariaRole": "searchbox",
+                "accessibleName": "Search jobs",
+            }
+        ]
+    )
+    assert elements[0].input_type == "search"
+    assert questions_from_elements(elements) == []
+
+
 def test_contenteditable_nth_fallback_covers_empty_attribute() -> None:
     locator = build_playwright_locator(
         PlaywrightControl(tag="div", input_type="contenteditable", index_in_type=0),

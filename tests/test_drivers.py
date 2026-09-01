@@ -50,6 +50,10 @@ class FakeSession:
     def owner(self) -> ControlOwner:
         return self._owner
 
+    @property
+    def task_space_id(self) -> str | None:
+        return "applyuminati:test"
+
     async def navigate(self, url: str, *, wait_for_load: bool = True) -> PageObservation:
         self._url = url
         return self._pages.get(url, next(iter(self._pages.values())))
@@ -397,6 +401,36 @@ async def test_run_refuses_to_act_while_the_user_owns_the_browser() -> None:
         checkpoint.kind == CheckpointKind.APPLICATION_OPENED.value
         for checkpoint in attempt.checkpoints
     )
+
+
+async def test_run_refuses_to_act_when_ownership_cannot_be_confirmed() -> None:
+    """A failed ownership RPC is not permission to drive."""
+
+    class _NoAnswer(FakeSession):
+        async def control_state(self) -> ControlOwner:
+            return ControlOwner.USER
+
+    apply_url = "https://boards.greenhouse.io/acme/jobs/1"
+    session = _NoAnswer({apply_url: _greenhouse_form(apply_url)})
+    job = build_job(
+        source="greenhouse",
+        tier=SourceTier.DIRECT_ATS,
+        source_job_id="1",
+        url=apply_url,
+        title="Engineer",
+        company="Acme",
+    )
+    attempt = ApplicationAttempt(application_id="a", job_id="j", driver="greenhouse")
+    outcome = await GreenhouseDriver().run(
+        attempt,
+        session,
+        DriverContext(job=job, profile=CareerProfile(), mode=ExecutionMode.AUTONOMOUS_SUBMIT),
+    )
+    assert outcome.kind is DriverOutcomeKind.WAITING_FOR_HUMAN
+    assert session.clicks == []
+    assert attempt.observations == []
+    assert attempt.checkpoints == []
+    assert attempt.submission_attempted_at is None
 
 
 async def test_likely_evidence_is_enough_to_complete() -> None:

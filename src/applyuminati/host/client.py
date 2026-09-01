@@ -30,7 +30,13 @@ log = get_logger(__name__)
 __all__ = ["HostClient", "open_local_session"]
 
 
-async def open_local_session(settings: Any, *, backend: str | None = None) -> HostSession:
+async def open_local_session(
+    settings: Any,
+    *,
+    backend: str | None = None,
+    session_id: str | None = None,
+    task_space: str | None = None,
+) -> HostSession:
     """Open a local browser session using registered plugins."""
     from applyuminati.browser.base import BROWSER_REGISTRY
     from applyuminati.plugins.browsers import register_browsers
@@ -44,7 +50,7 @@ async def open_local_session(settings: Any, *, backend: str | None = None) -> Ho
         impl = descriptor.create(settings=settings)
     except TypeError:
         impl = descriptor.create()
-    session = await impl.open_session()
+    session = await impl.open_session(session_id=session_id, task_space=task_space)
     return HostSession(session, slug)
 
 
@@ -166,13 +172,23 @@ class HostClient:
                 }
                 await socket.send(json.dumps(result))
                 return
-            hosted = await self.session_factory(backend=command.params.get("backend"))
+            hosted = await self.session_factory(
+                backend=command.params.get("backend"),
+                session_id=command.params.get("session_id"),
+                task_space=command.params.get("task_space"),
+            )
             self._sessions[hosted.session.session_id] = hosted
             result = {
                 "type": "result",
                 "command_id": command.id,
                 "ok": True,
-                "result": {"session_id": hosted.session.session_id, "backend": hosted.backend},
+                # The resolved identity, not the requested one: the server
+                # persists what the browser actually opened.
+                "result": {
+                    "session_id": hosted.session.session_id,
+                    "backend": hosted.backend,
+                    "task_space_id": hosted.session.task_space_id,
+                },
             }
             await socket.send(json.dumps(result))
             return

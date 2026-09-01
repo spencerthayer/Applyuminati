@@ -92,6 +92,11 @@ class PlaywrightSession(BrowserSession):
     def owner(self) -> ControlOwner:
         return self._owner
 
+    @property
+    def task_space_id(self) -> str | None:
+        """None: a Playwright context does not outlive this process."""
+        return None
+
     async def navigate(self, url: str, *, wait_for_load: bool = True) -> PageObservation:
         await self._page.goto(url, wait_until="domcontentloaded" if wait_for_load else "commit")
         return await self.observe()
@@ -366,9 +371,17 @@ class PlaywrightBackend(BrowserBackend):
             )
 
     async def open_session(
-        self, *, session_id: str | None = None, resume: BrowserCheckpoint | None = None
+        self,
+        *,
+        session_id: str | None = None,
+        resume: BrowserCheckpoint | None = None,
+        task_space: str | None = None,
     ) -> BrowserSession:
         from playwright.async_api import async_playwright
+
+        # Playwright has no workspace that outlives the context, so it cannot
+        # honour a task-space name and does not claim PERSISTENT_SESSION.
+        _ = task_space
 
         if self._playwright is None:
             self._playwright = await async_playwright().start()

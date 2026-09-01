@@ -220,6 +220,20 @@ exposes JavaScript evaluation for control scanning, and both local backends
 implement it. It is gated by the `JAVASCRIPT_EVAL` capability and is refused by
 a host whose selected backend does not advertise it.
 
+`create_session` carries the caller's durable identity rather than letting the
+host invent one:
+
+```
+server -> host   create_session  { session_id, task_space: "applyuminati:<attempt id>" }
+host   -> server result          { session_id, backend, task_space_id }
+```
+
+The host opens the named workspace and reports the identity it actually
+resolved. The server persists that before the session is handed to a human, so
+the resume re-enters the same workspace instead of creating a second one while
+the person is still working in the first. A backend without a persistent
+workspace reports `task_space_id: null`.
+
 ### 3.5 Capability matching
 
 `BrowserRequirements` states what a workflow needs. Selection is deterministic:

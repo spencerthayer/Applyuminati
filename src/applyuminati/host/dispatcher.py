@@ -216,7 +216,11 @@ class CommandDispatcher:
             await session.close()
             return {"closed": True}
         if command.command is HostCommand.CREATE_SESSION:
-            return {"session_id": session.session_id, "backend": hosted.backend}
+            return {
+                "session_id": session.session_id,
+                "backend": hosted.backend,
+                "task_space_id": session.task_space_id,
+            }
         msg = f"unknown command {command.command.value}"
         raise _HostRefusal(HostErrorCode.UNKNOWN_COMMAND, msg)
 

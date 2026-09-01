@@ -240,6 +240,17 @@ class BrowserSession(Protocol):
     @property
     def owner(self) -> ControlOwner: ...
 
+    @property
+    def task_space_id(self) -> str | None:
+        """Durable workspace this session is driving, when the backend has one.
+
+        ``None`` means the backend has no workspace that outlives the session,
+        which is the same reason it cannot advertise ``PERSISTENT_SESSION``.
+        Callers persist this so a human handoff and the resumed attempt name the
+        same workspace instead of two identifiers that merely coexist.
+        """
+        ...
+
     async def navigate(self, url: str, *, wait_for_load: bool = True) -> PageObservation: ...
 
     async def observe(self, *, include_text: bool = True) -> PageObservation:
@@ -324,8 +335,19 @@ class BrowserBackend(Protocol):
         ...
 
     async def open_session(
-        self, *, session_id: str | None = None, resume: BrowserCheckpoint | None = None
-    ) -> BrowserSession: ...
+        self,
+        *,
+        session_id: str | None = None,
+        resume: BrowserCheckpoint | None = None,
+        task_space: str | None = None,
+    ) -> BrowserSession:
+        """Open a browsing context, optionally in a caller-named workspace.
+
+        ``task_space`` lets the caller supply durable execution identity rather
+        than having the backend invent one from a local session id. Backends
+        without persistent workspaces ignore it.
+        """
+        ...
 
     async def aclose(self) -> None: ...
 

@@ -29,6 +29,7 @@ from applyuminati.host.security import require_secure_server
 class _Session:
     session_id = "s1"
     owner = ControlOwner.AGENT
+    task_space_id = "applyuminati:att1"
 
     async def control_state(self) -> ControlOwner:
         return ControlOwner.AGENT

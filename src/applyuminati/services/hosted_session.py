@@ -28,15 +28,28 @@ _CONTROL_POLL_SECONDS = 2.0
 class HostedBrowserSession:
     """One remote browsing context addressed through :class:`BrowserHostManager`."""
 
-    def __init__(self, manager: BrowserHostManager, host_id: str, session_id: str) -> None:
+    def __init__(
+        self,
+        manager: BrowserHostManager,
+        host_id: str,
+        session_id: str,
+        *,
+        task_space_id: str | None = None,
+    ) -> None:
         self._manager = manager
         self._host_id = host_id
         self.session_id = session_id
+        self._task_space_id = task_space_id
         self._owner = ControlOwner.AGENT
 
     @property
     def owner(self) -> ControlOwner:
         return self._owner
+
+    @property
+    def task_space_id(self) -> str | None:
+        """What the host reported at creation; the host is the authority."""
+        return self._task_space_id
 
     async def navigate(self, url: str, *, wait_for_load: bool = True) -> PageObservation:
         payload = await self._ok(
@@ -106,8 +119,17 @@ class HostedBrowserSession:
         return ActionResult.model_validate(payload)
 
     async def control_state(self) -> ControlOwner:
+        """Ask the host who owns the session. Fails closed.
+
+        An unanswered ownership question is not permission to drive, so a failed
+        or malformed reply reports ``USER`` rather than defaulting to ``AGENT``.
+        """
         payload = await self._ok(HostCommand.CONTROL_STATE, {})
-        self._owner = ControlOwner(str(payload.get("owner", ControlOwner.AGENT.value)))
+        raw = payload.get("owner")
+        try:
+            self._owner = ControlOwner(str(raw))
+        except ValueError:
+            self._owner = ControlOwner.USER
         return self._owner
 
     async def wait_for_control(self, *, timeout_seconds: float) -> ActionResult:

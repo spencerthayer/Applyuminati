@@ -307,17 +307,63 @@ class AttemptService:
         if not manager.is_connected(host_id):
             return None
         if not session_id:
+            params: dict[str, Any] = {
+                # Durable execution identity, so the host opens the workspace
+                # this attempt has to re-enter rather than inventing a name.
+                "session_id": attempt.id,
+                "task_space": attempt.task_space_id,
+            }
+            if attempt.browser_backend:
+                params["backend"] = attempt.browser_backend
             result = await manager.dispatch(
                 host_id,
                 HostCommand.CREATE_SESSION,
-                params={"backend": attempt.browser_backend} if attempt.browser_backend else {},
+                params=params,
                 idempotency_key=f"create-session:{attempt.id}",
             )
             if not result.ok or not result.result.get("session_id"):
                 return None
             session_id = str(result.result["session_id"])
-            attempt.browser_session_id = session_id
-        return HostedBrowserSession(manager, host_id, session_id)
+            await self._adopt_created_session(
+                attempt,
+                intervention,
+                host_id=host_id,
+                session_id=session_id,
+                task_space_id=result.result.get("task_space_id"),
+            )
+        return HostedBrowserSession(
+            manager,
+            host_id,
+            session_id,
+            task_space_id=attempt.task_space_id,
+        )
+
+    async def _adopt_created_session(
+        self,
+        attempt: ApplicationAttempt,
+        intervention: HumanIntervention | None,
+        *,
+        host_id: str,
+        session_id: str,
+        task_space_id: Any,
+    ) -> None:
+        """Commit a freshly created host session before anyone may use it.
+
+        The attempt is a detached aggregate, so mutating it does not reach the
+        row. Without this commit a session handed to a human is lost when the
+        request ends, and the resume creates a second one while the person is
+        still working in the first.
+        """
+        attempt.browser_host_id = host_id
+        attempt.browser_session_id = session_id
+        if isinstance(task_space_id, str) and task_space_id:
+            attempt.task_space_id = task_space_id
+        target = intervention or attempt.pending_intervention
+        if target is not None:
+            target.browser_host_id = host_id
+            target.browser_session_id = session_id
+            target.task_space_id = attempt.task_space_id
+        await self.persist(attempt)
 
     async def activate_browser(
         self,

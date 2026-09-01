@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from applyuminati.applications.detect import detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcome, DriverOutcomeKind
+from applyuminati.applications.runner import agent_still_owns
 from applyuminati.browser.base import BrowserSession, ControlOwner
 from applyuminati.browser.host_manager import BrowserHostManager, LiveHost
 from applyuminati.browser.host_protocol import (
@@ -215,6 +216,7 @@ async def _answer_host(
     connection: FakeConnection,
     *,
     reclaim_ok: bool,
+    created_sessions: list[CommandMessage] | None = None,
 ) -> asyncio.Task[None]:
     seen = 0
     owner = "user"
@@ -227,7 +229,25 @@ async def _answer_host(
                 continue
             sent = CommandMessage.model_validate_json(connection.sent[seen])
             seen += 1
-            if sent.command is HostCommand.RECLAIM_CONTROL:
+            if sent.command is HostCommand.CREATE_SESSION:
+                if created_sessions is not None:
+                    created_sessions.append(sent)
+                # A real host answers with the identity it actually opened.
+                created_id = f"host-session-{len(created_sessions or [1])}"
+                live.open_sessions.add(created_id)
+                await manager.handle_result(
+                    live,
+                    ResultMessage(
+                        command_id=sent.id,
+                        ok=True,
+                        result={
+                            "session_id": created_id,
+                            "backend": "ego_lite",
+                            "task_space_id": sent.params.get("task_space"),
+                        },
+                    ),
+                )
+            elif sent.command is HostCommand.RECLAIM_CONTROL:
                 ok = reclaim_ok and bool(sent.params.get("confirmed_by_user"))
                 if ok:
                     owner = "agent"
@@ -248,7 +268,12 @@ async def _answer_host(
                 )
             else:
                 await manager.handle_result(
-                    live, ResultMessage(command_id=sent.id, ok=True, result={})
+                    live,
+                    ResultMessage(
+                        command_id=sent.id,
+                        ok=True,
+                        result={"ok": True, "action": sent.command.value},
+                    ),
                 )
 
     return asyncio.create_task(pump())
@@ -664,6 +689,87 @@ async def test_reclaim_targets_the_host_the_intervention_recorded(database) -> N
         pump.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await pump
+
+
+async def test_open_browser_persists_the_session_it_hands_to_the_human(database) -> None:
+    job = _job()
+    manager = BrowserHostManager()
+    live, connection = await _attach(manager)
+    created: list[CommandMessage] = []
+    pump = await _answer_host(manager, live, connection, reclaim_ok=True, created_sessions=created)
+    try:
+        async with database.session() as session:
+            await JobRepository(session).upsert(job)
+            repos = Repositories.bind(session)
+            service = AttemptService(repos)
+            attempt = await service.create(
+                application_id="app1",
+                job=job,
+                profile=None,
+                mode=ExecutionMode.FILL_NO_SUBMIT,
+                browser_host_id=HOST_ID,
+            )
+            opened = attempt.open_intervention(
+                InterventionReason.AUTHENTICATION_REQUIRED, "Sign in"
+            )
+            await repos.attempts.save(attempt)
+            assert opened.browser_session_id is None
+
+            handed = await service.activate_browser(attempt, manager=manager, instruction="Sign in")
+            assert handed["ok"] is True
+            assert len(created) == 1
+            # Durable execution identity, not a host-invented name.
+            assert created[0].params["task_space"] == f"applyuminati:{attempt.id}"
+            assert created[0].params["session_id"] == attempt.id
+
+        async with database.session() as fresh:
+            reloaded = await AttemptRepository(fresh).get(attempt.id)
+        assert reloaded is not None
+        assert reloaded.browser_session_id == "host-session-1"
+        assert reloaded.task_space_id == f"applyuminati:{attempt.id}"
+        pending = reloaded.pending_intervention
+        assert pending is not None
+        assert pending.browser_session_id == "host-session-1"
+        assert pending.task_space_id == reloaded.task_space_id
+
+        async with database.session() as session:
+            repos = Repositories.bind(session)
+            service = AttemptService(repos)
+            resumed = await service.resolve(
+                reloaded.id,
+                pending.id,
+                InterventionResolution.DONE_CONTINUE,
+                manager=manager,
+            )
+            assert resumed.workflow_state is WorkflowState.PENDING
+            assert resumed.browser_session_id == "host-session-1"
+        # Reclaim reused the handed-off session instead of creating another.
+        assert len(created) == 1
+        reclaims = [
+            CommandMessage.model_validate_json(frame)
+            for frame in connection.sent
+            if CommandMessage.model_validate_json(frame).command is HostCommand.RECLAIM_CONTROL
+        ]
+        assert [frame.session_id for frame in reclaims] == ["host-session-1"]
+    finally:
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
+
+
+async def test_control_state_fails_closed_when_the_host_errors() -> None:
+    class _Broken:
+        async def dispatch(self, *_args: Any, **_kwargs: Any) -> ResultMessage:
+            return ResultMessage(
+                command_id="c1",
+                ok=False,
+                error_code=HostErrorCode.BACKEND_UNAVAILABLE,
+                error_message="host went away",
+            )
+
+    hosted = HostedBrowserSession(cast(Any, _Broken()), HOST_ID, "s1")
+    assert await hosted.control_state() is ControlOwner.USER
+    assert await agent_still_owns(cast(Any, hosted)) is False
 
 
 async def test_wait_for_control_polls_until_the_user_returns() -> None:

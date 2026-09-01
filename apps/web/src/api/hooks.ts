@@ -32,6 +32,7 @@ import type {
   HealthResponse,
   InboxEntry,
   JobDetail,
+  OpenBrowserResponse,
   JobSummary,
   Page,
   ProfileImportRequest,
@@ -413,6 +414,16 @@ export function useInbox(): UseQueryResult<InboxEntry[], ApiError> {
     queryKey: queryKeys.inbox,
     queryFn: ({ signal }) => get<InboxEntry[]>("/needs-you", undefined, signal),
     refetchInterval: 15_000,
+  });
+}
+
+export function useOpenBrowser(): UseMutationResult<OpenBrowserResponse, ApiError, string> {
+  const client = useQueryClient();
+  return useMutation<OpenBrowserResponse, ApiError, string>({
+    mutationFn: (attemptId) => post<OpenBrowserResponse>(`/needs-you/${attemptId}/open-browser`, {}),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.inbox });
+    },
   });
 }
 

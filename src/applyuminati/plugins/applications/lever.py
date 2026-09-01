@@ -19,6 +19,7 @@ from applyuminati.applications.runner import run_form_application
 from applyuminati.browser.base import BrowserSession, ElementRole, PageElement
 from applyuminati.core.models.execution import ApplicationAttempt
 from applyuminati.core.models.job import AtsVendor
+from applyuminati.core.registry import PluginMaturity
 
 SLUG = "lever"
 VERSION = "1"
@@ -85,4 +86,5 @@ PLUGIN = application_driver(
     ats=AtsVendor.LEVER,
     description="Lever application workflow. Detection is from the apply URL.",
     priority=50,
+    maturity=PluginMaturity.WORKFLOW_INTEGRATED,
 )

@@ -56,8 +56,18 @@ def run_host(
         )
         dispatcher = CommandDispatcher(documents_dir=docs, capabilities=capabilities)
 
-        async def factory(*, backend: str | None = None) -> HostSession:
-            return await open_local_session(settings, backend=backend)
+        async def factory(
+            *,
+            backend: str | None = None,
+            session_id: str | None = None,
+            task_space: str | None = None,
+        ) -> HostSession:
+            return await open_local_session(
+                settings,
+                backend=backend,
+                session_id=session_id,
+                task_space=task_space,
+            )
 
         client = HostClient(
             server=server,

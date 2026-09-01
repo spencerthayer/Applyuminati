@@ -39,3 +39,9 @@ def test_capability_matrix_matches_registries_and_claims_no_production() -> None
     assert all(row.maturity is not PluginMaturity.PRODUCTION_TESTED for row in rows)
     ego = next(row for row in rows if row.kind == "browser" and row.slug == "ego_lite")
     assert ego.maturity is PluginMaturity.WORKFLOW_INTEGRATED
+    greenhouse = next(
+        row for row in rows if row.kind == "application_driver" and row.slug == "greenhouse"
+    )
+    lever = next(row for row in rows if row.kind == "application_driver" and row.slug == "lever")
+    assert greenhouse.maturity is PluginMaturity.WORKFLOW_INTEGRATED
+    assert lever.maturity is PluginMaturity.WORKFLOW_INTEGRATED

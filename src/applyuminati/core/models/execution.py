@@ -83,6 +83,7 @@ BROWSER_HANDOFF_REASONS: frozenset[InterventionReason] = frozenset(
         InterventionReason.IDENTITY_VERIFICATION,
         InterventionReason.AUTOMATION_BLOCKED,
         InterventionReason.UNKNOWN_INTERACTION,
+        InterventionReason.USER_REVIEW,
     }
 )
 
@@ -130,6 +131,8 @@ class AttemptEventKind(StrEnum):
     CHECKPOINT = "checkpoint"
     INTERVENTION_OPENED = "intervention_opened"
     INTERVENTION_RESOLVED = "intervention_resolved"
+    INTERVENTION_RECLAIM_FAILED = "intervention_reclaim_failed"
+    CONTROL_KEPT = "control_kept"
     FAILURE = "failure"
     RESUMED = "resumed"
     SUBMITTED = "submitted"

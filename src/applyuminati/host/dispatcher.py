@@ -8,6 +8,7 @@ documents directory.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,34 @@ from applyuminati.browser.host_protocol import (
 )
 from applyuminati.core.clock import utcnow
 
-__all__ = ["CommandDispatcher", "HostSession"]
+__all__ = [
+    "HOST_UNDISPATCHABLE_CAPABILITIES",
+    "CommandDispatcher",
+    "HostSession",
+    "host_advertised_capabilities",
+]
+
+#: Capabilities a backend may have locally that this host will not execute.
+#: Advertising them would let a driver select the host and then fail immediately.
+HOST_UNDISPATCHABLE_CAPABILITIES: frozenset[BrowserCapability] = frozenset(
+    {
+        BrowserCapability.JAVASCRIPT_EVAL,
+        BrowserCapability.MULTI_TAB,
+        BrowserCapability.DOWNLOADS,
+        BrowserCapability.NETWORK_INTERCEPT,
+    }
+)
+
+
+def host_advertised_capabilities(capabilities: Iterable[BrowserCapability | str]) -> list[str]:
+    """Backend capabilities the dispatcher can actually honour."""
+    values: set[str] = set()
+    blocked = {item.value for item in HOST_UNDISPATCHABLE_CAPABILITIES}
+    for item in capabilities:
+        value = item.value if isinstance(item, BrowserCapability) else str(item)
+        if value not in blocked:
+            values.add(value)
+    return sorted(values)
 
 
 class HostSession:
@@ -188,7 +216,11 @@ class CommandDispatcher:
             await session.close()
             return {"closed": True}
         if command.command is HostCommand.CREATE_SESSION:
-            return {"session_id": session.session_id, "backend": hosted.backend}
+            return {
+                "session_id": session.session_id,
+                "backend": hosted.backend,
+                "task_space_id": session.task_space_id,
+            }
         msg = f"unknown command {command.command.value}"
         raise _HostRefusal(HostErrorCode.UNKNOWN_COMMAND, msg)
 

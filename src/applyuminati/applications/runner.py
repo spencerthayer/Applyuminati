@@ -37,13 +37,24 @@ from applyuminati.core.models.questionnaire import AnswerStatus
 
 __all__ = [
     "CONDITION_REASONS",
+    "SUBMISSION_COMPLETES",
     "advance_questions",
+    "agent_still_owns",
+    "handle_submission_evidence",
     "handoff_for",
     "mark_submission_attempted",
+    "persist_attempt",
     "record_observation",
     "run_form_application",
+    "submit_idempotency_key",
     "verify_submission",
 ]
+
+#: Certainty levels that may close the attempt as submitted.
+#: ``LIKELY`` is enough to complete. ``UNCERTAIN`` is not.
+SUBMISSION_COMPLETES: frozenset[SubmissionCertainty] = frozenset(
+    {SubmissionCertainty.CONFIRMED, SubmissionCertainty.LIKELY}
+)
 
 CONDITION_REASONS: dict[PageCondition, InterventionReason] = {
     PageCondition.LOGIN_REQUIRED: InterventionReason.AUTHENTICATION_REQUIRED,
@@ -185,6 +196,17 @@ def mark_submission_attempted(attempt: ApplicationAttempt) -> None:
         attempt.record_event(AttemptEventKind.SUBMITTED, "submission click is about to happen")
 
 
+def submit_idempotency_key(attempt: ApplicationAttempt) -> str:
+    """Stable key for the one final-submit click of this attempt."""
+    return f"application-attempt:{attempt.id}:submit"
+
+
+async def persist_attempt(attempt: ApplicationAttempt, context: DriverContext) -> None:
+    """Flush the attempt through the service-owned callback, if one exists."""
+    if context.persist is not None:
+        await context.persist(attempt)
+
+
 def verify_submission(observation: PageObservation) -> SubmissionEvidence:
     """Judge confirmation from the page. Honesty over certainty."""
     text = (observation.text or "").lower()
@@ -250,6 +272,34 @@ def complete(attempt: ApplicationAttempt, evidence: SubmissionEvidence) -> Drive
     return DriverOutcome(kind=DriverOutcomeKind.COMPLETED, attempt=attempt, evidence=evidence)
 
 
+def handle_submission_evidence(
+    attempt: ApplicationAttempt, evidence: SubmissionEvidence
+) -> DriverOutcome:
+    """Apply one submission-evidence rule for both the click path and restarts.
+
+    ``CONFIRMED`` and ``LIKELY`` may complete and record ``SUBMISSION_CONFIRMED``.
+    ``UNCERTAIN`` opens ``USER_REVIEW``, keeps ``submission_attempted_at``, and
+    never treats the click as success or as a terminal failure.
+    """
+    attempt.evidence = evidence
+    attempt.touch()
+    if evidence.certainty in SUBMISSION_COMPLETES:
+        return complete(attempt, evidence)
+    intervention = attempt.open_intervention(
+        InterventionReason.USER_REVIEW,
+        (
+            "A submit click already happened, but the page does not confirm "
+            "receipt. Review the employer site. Do not click submit again."
+        ),
+        requires_browser_handoff=True,
+    )
+    return DriverOutcome(
+        kind=DriverOutcomeKind.WAITING_FOR_HUMAN,
+        attempt=attempt,
+        intervention=intervention,
+    )
+
+
 async def agent_still_owns(session: BrowserSession) -> bool:
     """Refuse to act while the human has the browser."""
     owner = await session.control_state()
@@ -270,6 +320,20 @@ async def run_form_application(
     """Shared Greenhouse/Lever form flow. Drivers only supply URL and submit matching."""
     attempt.driver = slug
     attempt.driver_version = version
+    if not await agent_still_owns(session):
+        intervention = attempt.open_intervention(
+            InterventionReason.UNKNOWN_INTERACTION,
+            (
+                "The browser is still owned by the user. "
+                "Finish in the browser, then choose Done, continue."
+            ),
+            requires_browser_handoff=True,
+        )
+        return DriverOutcome(
+            kind=DriverOutcomeKind.WAITING_FOR_HUMAN,
+            attempt=attempt,
+            intervention=intervention,
+        )
     attempt.workflow_state = WorkflowState.RUNNING
     if attempt.events == []:
         attempt.record_event(AttemptEventKind.STARTED, started_message)
@@ -277,15 +341,7 @@ async def run_form_application(
     if attempt.submission_attempted_at is not None:
         observation = await session.observe()
         record_observation(attempt, observation)
-        evidence = verify_submission(observation)
-        if evidence.certainty is SubmissionCertainty.UNCERTAIN:
-            return fail(
-                attempt,
-                category=FailureCategory.DUPLICATE_ACTION,
-                code="application.submission_uncertain",
-                message="submission was attempted earlier; confirmation is still uncertain",
-            )
-        return complete(attempt, evidence)
+        return handle_submission_evidence(attempt, verify_submission(observation))
 
     observation = await session.navigate(apply_url)
     record_observation(attempt, observation)
@@ -327,7 +383,12 @@ async def run_form_application(
         return DriverOutcome(kind=DriverOutcomeKind.COMPLETED, attempt=attempt)
 
     mark_submission_attempted(attempt)
-    clicked = await session.click(submit.locator, label=submit.label)
+    await persist_attempt(attempt, context)
+    clicked = await session.click(
+        submit.locator,
+        label=submit.label,
+        idempotency_key=submit_idempotency_key(attempt),
+    )
     observation = await session.observe()
     record_observation(attempt, observation)
     if not clicked.ok:
@@ -337,4 +398,4 @@ async def run_form_application(
             code="application.submit_failed",
             message=clicked.detail or "submit click failed",
         )
-    return complete(attempt, verify_submission(observation))
+    return handle_submission_evidence(attempt, verify_submission(observation))

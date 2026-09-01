@@ -7,6 +7,8 @@ compose file work without CORS or a second container.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -47,9 +49,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         reset = await repos.browser_hosts.clear_stale_connection_states()
     if reset:
         log.info("api.browser_hosts_reset", count=reset)
-    yield
-    log.info("api.shutting_down")
-    await container.aclose()
+    stop_worker = asyncio.Event()
+    from applyuminati.services.attempt_tasks import run_attempt_worker_forever
+
+    worker = asyncio.create_task(
+        run_attempt_worker_forever(poll_interval=1.0, stop_event=stop_worker),
+        name="application-attempt-worker",
+    )
+    try:
+        yield
+    finally:
+        stop_worker.set()
+        worker.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await worker
+        log.info("api.shutting_down")
+        await container.aclose()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

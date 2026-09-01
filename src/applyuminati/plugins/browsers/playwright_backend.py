@@ -46,6 +46,7 @@ __all__ = [
     "PlaywrightControl",
     "PlaywrightSession",
     "build_playwright_locator",
+    "checkbox_checked_from_answer",
     "elements_from_metadata",
     "radio_answer_matches",
 ]
@@ -136,19 +137,19 @@ def _nth_selector(control: PlaywrightControl) -> str:
     """Selector whose nth index is counted only among matching visible nodes."""
     n = control.index_in_type
     if control.input_type == "contenteditable":
-        base = ":is([contenteditable='true'], [contenteditable=''])"
+        base = ":is([contenteditable='true'], [contenteditable='']):not([role])"
     elif control.aria_role:
         escaped = control.aria_role.replace("'", "\\'")
         base = f"[role='{escaped}']"
     elif control.tag == "input" and control.input_type:
         escaped = control.input_type.replace("'", "\\'")
-        base = f"input[type='{escaped}']"
+        base = f"input[type='{escaped}']:not([role])"
     elif control.tag == "a":
-        base = "a[href]"
+        base = "a[href]:not([role])"
     elif control.tag in _NATIVE_NTH_TAGS:
-        base = control.tag
+        base = f"{control.tag}:not([role])"
     else:
-        base = control.tag
+        base = f"{control.tag}:not([role])"
     return f"{base} >> visible=true >> nth={n}"
 
 
@@ -256,6 +257,17 @@ def build_playwright_locator(
 
 
 _CHECKBOX_TRUE = frozenset({"yes", "true", "y", "1", "on"})
+_CHECKBOX_FALSE = frozenset({"no", "false", "n", "0", "off"})
+
+
+def checkbox_checked_from_answer(answer: str) -> bool | None:
+    """True/False for a yes/no checkbox answer, or None if the value is unknown."""
+    folded = answer.strip().casefold()
+    if folded in _CHECKBOX_TRUE:
+        return True
+    if folded in _CHECKBOX_FALSE:
+        return False
+    return None
 
 
 def radio_answer_matches(
@@ -323,7 +335,9 @@ _CONTROL_METADATA_JS = """() => {
   const rows = [];
   document.querySelectorAll(selector).forEach((el) => {
     const style = getComputedStyle(el);
-    if (el.offsetParent === null || style.visibility === 'hidden') return;
+    const rect = el.getBoundingClientRect();
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return;
+    if (rect.width === 0 || rect.height === 0) return;
     if (seen.has(el)) return;
     seen.add(el);
     const dataTestid = el.getAttribute('data-testid');
@@ -549,7 +563,10 @@ class PlaywrightSession(BrowserSession):
         first = self._page.locator(locator).first
         name = await first.get_attribute("name")
         group = (
-            self._page.locator(f'input[type="radio"]{_css_attr("name", name)}')
+            self._page.locator(
+                f'input[type="radio"]{_css_attr("name", name)}, '
+                f'[role="radio"]{_css_attr("name", name)}'
+            )
             if name
             else self._page.locator(locator)
         )
@@ -591,11 +608,19 @@ class PlaywrightSession(BrowserSession):
         try:
             target = self._page.locator(locator).first
             input_type = (await target.get_attribute("type") or "").lower()
+            aria_role = (await target.get_attribute("role") or "").lower()
             tag = await target.evaluate("el => el.tagName")
-            if input_type == "radio":
+            if input_type == "radio" or aria_role == "radio":
                 return await self._fill_radio(locator, value, start)
-            if input_type == "checkbox":
-                checked = value.strip().casefold() in _CHECKBOX_TRUE
+            if input_type == "checkbox" or aria_role == "checkbox":
+                checked = checkbox_checked_from_answer(value)
+                if checked is None:
+                    return ActionResult(
+                        ok=False,
+                        action="fill",
+                        detail=f"checkbox answer {value!r} is not a recognized yes/no value",
+                        duration_ms=(time.perf_counter() - start) * 1000,
+                    )
                 await self._page.check(locator) if checked else await self._page.uncheck(locator)
                 return ActionResult(
                     ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000

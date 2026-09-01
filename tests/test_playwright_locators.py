@@ -13,6 +13,7 @@ from applyuminati.plugins.browsers.playwright_backend import (
     PlaywrightControl,
     PlaywrightSession,
     build_playwright_locator,
+    checkbox_checked_from_answer,
     elements_from_metadata,
     radio_answer_matches,
 )
@@ -74,7 +75,7 @@ def test_anchor_nth_fallback_matches_href_scan() -> None:
         PlaywrightControl(tag="a", index_in_type=0),
         used=set(),
     )
-    assert locator == "a[href] >> visible=true >> nth=0"
+    assert locator == "a[href]:not([role]) >> visible=true >> nth=0"
 
 
 def test_contenteditable_nth_fallback_covers_empty_attribute() -> None:
@@ -82,7 +83,10 @@ def test_contenteditable_nth_fallback_covers_empty_attribute() -> None:
         PlaywrightControl(tag="div", input_type="contenteditable", index_in_type=0),
         used=set(),
     )
-    assert locator == ":is([contenteditable='true'], [contenteditable='']) >> visible=true >> nth=0"
+    expected = (
+        ":is([contenteditable='true'], [contenteditable='']):not([role]) >> visible=true >> nth=0"
+    )
+    assert locator == expected
 
 
 def test_role_comboboxes_share_one_nth_range() -> None:
@@ -97,6 +101,30 @@ def test_role_comboboxes_share_one_nth_range() -> None:
         "[role='combobox'] >> visible=true >> nth=0",
         "[role='combobox'] >> visible=true >> nth=1",
     ]
+
+
+def test_plain_anchor_nth_excludes_role_tagged_anchors() -> None:
+    elements = elements_from_metadata(
+        [
+            {"tag": "a", "ariaRole": "link", "accessibleName": "Help"},
+            {"tag": "a", "accessibleName": "Main"},
+            {"tag": "a", "accessibleName": "Careers"},
+            {"tag": "button", "ariaRole": "button", "accessibleName": "Go"},
+            {"tag": "button", "accessibleName": "Save"},
+        ]
+    )
+    by_label = {element.label: element.locator for element in elements}
+    assert by_label["Help"] == "[role='link'] >> visible=true >> nth=0"
+    assert by_label["Main"] == "a[href]:not([role]) >> visible=true >> nth=0"
+    assert by_label["Careers"] == "a[href]:not([role]) >> visible=true >> nth=1"
+    assert by_label["Go"] == "[role='button'] >> visible=true >> nth=0"
+    assert by_label["Save"] == "button:not([role]) >> visible=true >> nth=0"
+
+
+def test_checkbox_answer_requires_recognized_yes_or_no() -> None:
+    assert checkbox_checked_from_answer("yes") is True
+    assert checkbox_checked_from_answer("off") is False
+    assert checkbox_checked_from_answer("I agree") is None
 
 
 def test_duplicate_candidate_falls_back_to_nth() -> None:
@@ -118,8 +146,8 @@ def test_duplicate_name_does_not_claim_ambiguous_selector() -> None:
     )
     locators = [element.locator for element in elements]
     assert locators == [
-        "input[type='email'] >> visible=true >> nth=0",
-        "input[type='email'] >> visible=true >> nth=1",
+        "input[type='email']:not([role]) >> visible=true >> nth=0",
+        "input[type='email']:not([role]) >> visible=true >> nth=1",
     ]
 
 
@@ -129,7 +157,7 @@ def test_candidate_skipped_when_not_unique_in_dom() -> None:
         used=set(),
         unique_in_dom=set(),
     )
-    assert locator == "input[type='email'] >> visible=true >> nth=0"
+    assert locator == "input[type='email']:not([role]) >> visible=true >> nth=0"
 
 
 def test_data_qa_emits_data_qa_selector() -> None:
@@ -157,7 +185,7 @@ def test_dom_uniqueness_flag_skips_ambiguous_name() -> None:
     elements = elements_from_metadata(
         [{"tag": "input", "type": "email", "name": "email", "uniqueName": False}]
     )
-    assert elements[0].locator == "input[type='email'] >> visible=true >> nth=0"
+    assert elements[0].locator == "input[type='email']:not([role]) >> visible=true >> nth=0"
 
 
 def test_aria_label_attribute_is_a_locator_candidate() -> None:
@@ -246,8 +274,8 @@ def test_metadata_rows_produce_unique_locators_and_conservative_questions() -> N
     )
     locators = [element.locator for element in elements]
     assert len(locators) == len(set(locators))
-    assert locators[0] == "input[type='text'] >> visible=true >> nth=0"
-    assert locators[1] == "input[type='text'] >> visible=true >> nth=1"
+    assert locators[0] == "input[type='text']:not([role]) >> visible=true >> nth=0"
+    assert locators[1] == "input[type='text']:not([role]) >> visible=true >> nth=1"
 
     by_label = {element.label: element for element in elements if element.label}
     assert by_label["Job title"].role is ElementRole.TEXTBOX
@@ -327,6 +355,12 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         agreed = await session.fill_field(terms.locator, "yes")
         assert agreed.ok
         assert await page.locator('input[name="terms"]').is_checked()
+        rejected = await session.fill_field(terms.locator, "I agree")
+        assert not rejected.ok
+
+        main = next(element for element in observation.elements if element.label == "Main")
+        assert ":not([role])" in main.locator
+        assert await page.locator(main.locator).inner_text() == "Main"
 
         question_texts = {question.text for question in observation.questions}
         roles = {element.label: element.role for element in observation.elements if element.label}

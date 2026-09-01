@@ -546,6 +546,25 @@ def elements_from_metadata(rows: Sequence[Any]) -> list[PageElement]:
     return elements
 
 
+def _unsupported_aria_fill(
+    tag: str, input_type: str, aria_role: str, start: float
+) -> ActionResult | None:
+    if tag == "INPUT":
+        return None
+    if input_type == "radio" or aria_role == "radio":
+        widget = "radio"
+    elif input_type == "checkbox" or aria_role == "checkbox":
+        widget = "checkbox"
+    else:
+        return None
+    return ActionResult(
+        ok=False,
+        action="fill",
+        detail=f"custom ARIA {widget} is not fillable",
+        duration_ms=(time.perf_counter() - start) * 1000,
+    )
+
+
 class PlaywrightSession(BrowserSession):
     def __init__(self, page: Any, browser: Any, session_id: str, settings: Settings) -> None:
         self._page = page
@@ -608,16 +627,16 @@ class PlaywrightSession(BrowserSession):
         first = self._page.locator(locator).first
         name = await first.get_attribute("name")
         group = (
-            self._page.locator(
-                f'input[type="radio"]{_css_attr("name", name)}, '
-                f'[role="radio"]{_css_attr("name", name)}'
-            )
+            self._page.locator(f'input[type="radio"]{_css_attr("name", name)}')
             if name
             else self._page.locator(locator)
         )
         count = await group.count()
         for index in range(count):
             radio = group.nth(index)
+            tag = await radio.evaluate("el => el.tagName")
+            if tag != "INPUT" or not await radio.is_enabled():
+                continue
             option_value = await radio.get_attribute("value")
             option_label = await radio.evaluate(
                 """el => {
@@ -648,6 +667,20 @@ class PlaywrightSession(BrowserSession):
             duration_ms=(time.perf_counter() - start) * 1000,
         )
 
+    async def _fill_checkbox(self, locator: str, value: str, start: float) -> ActionResult:
+        checked = checkbox_checked_from_answer(value)
+        if checked is None:
+            return ActionResult(
+                ok=False,
+                action="fill",
+                detail=f"checkbox answer {value!r} is not a recognized yes/no value",
+                duration_ms=(time.perf_counter() - start) * 1000,
+            )
+        await self._page.check(locator) if checked else await self._page.uncheck(locator)
+        return ActionResult(
+            ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
+        )
+
     async def fill_field(self, locator: str, value: str) -> ActionResult:
         start = time.perf_counter()
         try:
@@ -655,21 +688,13 @@ class PlaywrightSession(BrowserSession):
             input_type = (await target.get_attribute("type") or "").lower()
             aria_role = (await target.get_attribute("role") or "").lower()
             tag = await target.evaluate("el => el.tagName")
+            unsupported = _unsupported_aria_fill(tag, input_type, aria_role, start)
+            if unsupported is not None:
+                return unsupported
             if input_type == "radio" or aria_role == "radio":
                 return await self._fill_radio(locator, value, start)
             if input_type == "checkbox" or aria_role == "checkbox":
-                checked = checkbox_checked_from_answer(value)
-                if checked is None:
-                    return ActionResult(
-                        ok=False,
-                        action="fill",
-                        detail=f"checkbox answer {value!r} is not a recognized yes/no value",
-                        duration_ms=(time.perf_counter() - start) * 1000,
-                    )
-                await self._page.check(locator) if checked else await self._page.uncheck(locator)
-                return ActionResult(
-                    ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
-                )
+                return await self._fill_checkbox(locator, value, start)
             if tag == "SELECT":
                 await self._page.select_option(locator, value)
                 return ActionResult(

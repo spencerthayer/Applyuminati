@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from applyuminati.browser.base import ElementRole
 from applyuminati.core.settings import Settings
 from applyuminati.plugins.browsers.playwright_backend import (
     _CONTROL_METADATA_JS,
+    _SCANNED_ROLES,
     PlaywrightBackend,
     PlaywrightControl,
     PlaywrightSession,
@@ -101,6 +103,8 @@ def test_contenteditable_with_role_uses_role_nth() -> None:
 
 def test_scan_selector_includes_searchbox_role() -> None:
     assert '[role="searchbox"]' in _CONTROL_METADATA_JS
+    js_roles = set(re.findall(r'\[role="([^"]+)"\]', _CONTROL_METADATA_JS))
+    assert js_roles == _SCANNED_ROLES
 
 
 def test_searchbox_roles_share_one_nth_range() -> None:
@@ -534,6 +538,9 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         filters = next(element for element in observation.elements if element.label == "Filters")
         assert filters.locator.startswith("button[role='menu']")
         assert await page.locator(filters.locator).inner_text() == "Filters"
+        aria_yes = next(element for element in observation.elements if element.label == "ARIA yes")
+        aria_fill = await session.fill_field(aria_yes.locator, "ARIA yes")
+        assert not aria_fill.ok
     finally:
         await session.close()
         await backend.aclose()

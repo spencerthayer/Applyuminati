@@ -572,10 +572,8 @@ async def test_same_radio_name_in_two_forms_is_two_questions(tmp_path: Path) -> 
             for element in radios
             if element.form_scope == "form:1" and element.value == "yes"
         )
-        form_b = next(
-            question for question in auth_questions if question.field_locator == form_b_yes.locator
-        )
-        picked = await session.fill_field(form_b.field_locator, "yes")
+        assert any(question.field_locator == form_b_yes.locator for question in auth_questions)
+        picked = await session.fill_field(form_b_yes.locator, "yes")
         assert picked.ok
         page = session._page
         states = await page.evaluate(

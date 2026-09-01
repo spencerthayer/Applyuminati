@@ -121,6 +121,18 @@ def test_searchbox_roles_share_one_nth_range() -> None:
     ]
 
 
+def test_unscanned_roles_use_tag_scoped_nth() -> None:
+    elements = elements_from_metadata(
+        [
+            {"tag": "div", "ariaRole": "menu", "accessibleName": "Panel"},
+            {"tag": "button", "ariaRole": "menu", "accessibleName": "Filters"},
+        ]
+    )
+    by_label = {element.label: element.locator for element in elements}
+    assert by_label["Panel"] == "div[role='menu'] >> visible=true >> nth=0"
+    assert by_label["Filters"] == "button[role='menu'] >> visible=true >> nth=0"
+
+
 def test_searchbox_role_is_not_a_question() -> None:
     elements = elements_from_metadata(
         [
@@ -132,6 +144,21 @@ def test_searchbox_role_is_not_a_question() -> None:
             }
         ]
     )
+    assert elements[0].input_type == "search"
+    assert questions_from_elements(elements) == []
+
+
+def test_textarea_searchbox_is_not_a_question() -> None:
+    elements = elements_from_metadata(
+        [
+            {
+                "tag": "textarea",
+                "ariaRole": "searchbox",
+                "accessibleName": "Find a question",
+            }
+        ]
+    )
+    assert elements[0].role is ElementRole.TEXTAREA
     assert elements[0].input_type == "search"
     assert questions_from_elements(elements) == []
 
@@ -503,6 +530,10 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
             element for element in observation.elements if element.label == "Query searchbox"
         )
         assert query_search.input_type == "search"
+        assert "Find a question" not in question_texts
+        filters = next(element for element in observation.elements if element.label == "Filters")
+        assert filters.locator.startswith("button[role='menu']")
+        assert await page.locator(filters.locator).inner_text() == "Filters"
     finally:
         await session.close()
         await backend.aclose()

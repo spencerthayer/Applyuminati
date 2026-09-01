@@ -112,6 +112,10 @@ class PlaywrightControl:
 
 _CSS_ID_RE = re.compile(r"^[A-Za-z_][\w-]*$")
 _NATIVE_NTH_TAGS = frozenset({"input", "textarea", "select", "button", "a"})
+#: Must match the ``[role=...]`` entries in ``_CONTROL_METADATA_JS``.
+_SCANNED_ROLES = frozenset(
+    {"combobox", "textbox", "searchbox", "checkbox", "radio", "button", "link"}
+)
 
 
 def _css_attr(name: str, value: str) -> str:
@@ -120,25 +124,30 @@ def _css_attr(name: str, value: str) -> str:
 
 
 def _nth_group(control: PlaywrightControl) -> str:
-    if control.aria_role:
-        return f"role:{control.aria_role}"
-    if control.input_type == "contenteditable":
-        return "contenteditable"
-    if control.tag == "input":
-        if control.input_type:
-            return f"input:{control.input_type}"
-        return "input:not([type])"
-    if control.tag == "a":
-        return "a[href]"
-    return control.tag
+    if control.aria_role and control.aria_role in _SCANNED_ROLES:
+        group = f"role:{control.aria_role}"
+    elif control.aria_role:
+        group = f"{control.tag}[role={control.aria_role}]"
+    elif control.input_type == "contenteditable":
+        group = "contenteditable"
+    elif control.tag == "input":
+        group = f"input:{control.input_type}" if control.input_type else "input:not([type])"
+    elif control.tag == "a":
+        group = "a[href]"
+    else:
+        group = control.tag
+    return group
 
 
 def _nth_selector(control: PlaywrightControl) -> str:
     """Selector whose nth index is counted only among matching visible nodes."""
     n = control.index_in_type
-    if control.aria_role:
+    if control.aria_role and control.aria_role in _SCANNED_ROLES:
         escaped = control.aria_role.replace("'", "\\'")
         base = f"[role='{escaped}']"
+    elif control.aria_role:
+        escaped = control.aria_role.replace("'", "\\'")
+        base = f"{control.tag}[role='{escaped}']"
     elif control.input_type == "contenteditable":
         base = ":is([contenteditable='true'], [contenteditable='']):not([role])"
     elif control.tag == "input" and control.input_type:
@@ -427,6 +436,8 @@ def _classify_control(row: dict[str, Any]) -> tuple[ElementRole, str | None]:
     role = ElementRole.TEXTBOX
     if row.get("contenteditable"):
         return ElementRole.TEXTBOX, "contenteditable"
+    if aria_role == "searchbox":
+        input_type = "search"
     if tag == "select":
         role = ElementRole.SELECT
     elif aria_role == "combobox" and tag not in {"input", "textarea"}:

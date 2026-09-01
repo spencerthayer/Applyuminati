@@ -132,21 +132,23 @@ def _nth_group(control: PlaywrightControl) -> str:
 
 
 def _nth_selector(control: PlaywrightControl) -> str:
-    """Selector whose nth index is counted only among matching nodes."""
+    """Selector whose nth index is counted only among matching visible nodes."""
     n = control.index_in_type
     if control.input_type == "contenteditable":
-        return f":is([contenteditable='true'], [contenteditable='']) >> nth={n}"
-    if control.aria_role:
+        base = ":is([contenteditable='true'], [contenteditable=''])"
+    elif control.aria_role:
         escaped = control.aria_role.replace("'", "\\'")
-        return f"[role='{escaped}'] >> nth={n}"
-    if control.tag == "input" and control.input_type:
+        base = f"[role='{escaped}']"
+    elif control.tag == "input" and control.input_type:
         escaped = control.input_type.replace("'", "\\'")
-        return f"input[type='{escaped}'] >> nth={n}"
-    if control.tag == "a":
-        return f"a[href] >> nth={n}"
-    if control.tag in _NATIVE_NTH_TAGS:
-        return f"{control.tag} >> nth={n}"
-    return f"{control.tag} >> nth={n}"
+        base = f"input[type='{escaped}']"
+    elif control.tag == "a":
+        base = "a[href]"
+    elif control.tag in _NATIVE_NTH_TAGS:
+        base = control.tag
+    else:
+        base = control.tag
+    return f"{base} >> visible=true >> nth={n}"
 
 
 def build_playwright_locator(control: PlaywrightControl, *, used: set[str]) -> str:

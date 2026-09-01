@@ -74,7 +74,7 @@ def test_anchor_nth_fallback_matches_href_scan() -> None:
         PlaywrightControl(tag="a", index_in_type=0),
         used=set(),
     )
-    assert locator == "a[href] >> nth=0"
+    assert locator == "a[href] >> visible=true >> nth=0"
 
 
 def test_contenteditable_nth_fallback_covers_empty_attribute() -> None:
@@ -82,7 +82,7 @@ def test_contenteditable_nth_fallback_covers_empty_attribute() -> None:
         PlaywrightControl(tag="div", input_type="contenteditable", index_in_type=0),
         used=set(),
     )
-    assert locator == ":is([contenteditable='true'], [contenteditable='']) >> nth=0"
+    assert locator == ":is([contenteditable='true'], [contenteditable='']) >> visible=true >> nth=0"
 
 
 def test_role_comboboxes_share_one_nth_range() -> None:
@@ -94,8 +94,8 @@ def test_role_comboboxes_share_one_nth_range() -> None:
     )
     locators = [element.locator for element in elements]
     assert locators == [
-        "[role='combobox'] >> nth=0",
-        "[role='combobox'] >> nth=1",
+        "[role='combobox'] >> visible=true >> nth=0",
+        "[role='combobox'] >> visible=true >> nth=1",
     ]
 
 
@@ -195,8 +195,8 @@ def test_metadata_rows_produce_unique_locators_and_conservative_questions() -> N
     )
     locators = [element.locator for element in elements]
     assert len(locators) == len(set(locators))
-    assert locators[0] == "input[type='text'] >> nth=0"
-    assert locators[1] == "input[type='text'] >> nth=1"
+    assert locators[0] == "input[type='text'] >> visible=true >> nth=0"
+    assert locators[1] == "input[type='text'] >> visible=true >> nth=1"
 
     by_label = {element.label: element for element in elements if element.label}
     assert by_label["Job title"].role is ElementRole.TEXTBOX

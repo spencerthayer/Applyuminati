@@ -124,12 +124,12 @@ def _nth_group(control: PlaywrightControl) -> str:
         return "contenteditable"
     if control.aria_role:
         return f"role:{control.aria_role}"
-    if control.tag == "input" and control.input_type:
-        return f"input:{control.input_type}"
+    if control.tag == "input":
+        if control.input_type:
+            return f"input:{control.input_type}"
+        return "input:not([type])"
     if control.tag == "a":
         return "a[href]"
-    if control.tag in _NATIVE_NTH_TAGS:
-        return control.tag
     return control.tag
 
 
@@ -144,6 +144,8 @@ def _nth_selector(control: PlaywrightControl) -> str:
     elif control.tag == "input" and control.input_type:
         escaped = control.input_type.replace("'", "\\'")
         base = f"input[type='{escaped}']:not([role])"
+    elif control.tag == "input":
+        base = "input:not([type]):not([role])"
     elif control.tag == "a":
         base = "a[href]:not([role])"
     elif control.tag in _NATIVE_NTH_TAGS:
@@ -347,7 +349,7 @@ _CONTROL_METADATA_JS = """() => {
     const id = el.id || null;
     const name = el.getAttribute('name');
     const value = el.getAttribute('value');
-    const type = (el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : null));
+    const type = el.getAttribute('type');
     const ariaLabel = (el.getAttribute('aria-label') || '').trim() || null;
     const placeholder = el.getAttribute('placeholder');
     const idSel = id ? idSelector(id) : null;
@@ -442,15 +444,19 @@ def _staged_controls(
     for row in rows:
         if not isinstance(row, dict):
             continue
-        role, input_type = _classify_control(row)
+        role, classified_type = _classify_control(row)
         tag = str(row.get("tag") or "")
         aria_role = _optional_str(row.get("ariaRole"))
         if aria_role:
             aria_role = aria_role.lower()
         data_attr, data_value = _data_attr_from_row(row)
+        locator_type = classified_type
+        if tag == "input" and classified_type != "contenteditable":
+            raw_type = _optional_str(row.get("type"))
+            locator_type = raw_type.lower() if raw_type else None
         staged_control = PlaywrightControl(
             tag=tag,
-            input_type=input_type,
+            input_type=locator_type,
             element_id=_optional_str(row.get("id")),
             name=_optional_str(row.get("name")),
             value=None if row.get("value") is None else str(row.get("value")),
@@ -473,6 +479,7 @@ def _page_element(
     accessible = _optional_str(row.get("accessibleName")) or control.aria_label
     options_raw = row.get("options") or []
     options = [str(item) for item in options_raw if item] if isinstance(options_raw, list) else []
+    _, classified_type = _classify_control(row)
     return PageElement(
         locator=locator,
         role=role,
@@ -483,7 +490,7 @@ def _page_element(
         required=bool(row.get("required")),
         disabled=bool(row.get("disabled")),
         options=options,
-        input_type=control.input_type,
+        input_type=classified_type,
     )
 
 

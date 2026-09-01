@@ -137,7 +137,13 @@ def test_duplicate_candidate_falls_back_to_nth() -> None:
     assert "nth=" in locator
 
 
-def test_duplicate_name_does_not_claim_ambiguous_selector() -> None:
+def test_untyped_inputs_use_absent_type_nth() -> None:
+    elements = elements_from_metadata([{"tag": "input"}, {"tag": "input"}])
+    assert [element.locator for element in elements] == [
+        "input:not([type]):not([role]) >> visible=true >> nth=0",
+        "input:not([type]):not([role]) >> visible=true >> nth=1",
+    ]
+    assert all(element.input_type == "text" for element in elements)
     elements = elements_from_metadata(
         [
             {"tag": "input", "type": "email", "name": "email"},
@@ -327,7 +333,7 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
             if element.role is ElementRole.TEXTBOX
             and element.input_type == "text"
             and not element.name
-            and element.locator.startswith("input[type='text']")
+            and "input:not([type])" in element.locator
         ]
         assert len(nameless) >= 2
         first_blank = await session.fill_field(nameless[0].locator, "alpha")
@@ -335,7 +341,7 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         assert first_blank.ok
         assert second_blank.ok
         page = session._page
-        values = await page.locator("input[type='text']").evaluate_all(
+        values = await page.locator("input:not([type])").evaluate_all(
             "els => els.filter(e => !e.name && !e.id).map(e => e.value)"
         )
         assert values[:2] == ["alpha", "beta"]

@@ -202,15 +202,52 @@ def _question_kind(element: PageElement) -> QuestionKind:
     return _INPUT_QUESTION_KINDS.get(element.input_type or "", QuestionKind.SHORT_TEXT)
 
 
+_BOOLEAN_OPTION_PAIRS: frozenset[frozenset[str]] = frozenset(
+    {
+        frozenset({"yes", "no"}),
+        frozenset({"true", "false"}),
+        frozenset({"y", "n"}),
+    }
+)
+
+
+def _radio_option_text(radio: PageElement, group: Sequence[PageElement]) -> str:
+    label = (radio.label or "").strip()
+    labels = [(item.label or "").strip() for item in group]
+    if label and labels.count(label) == 1:
+        return label
+    if radio.value:
+        return str(radio.value)
+    return label
+
+
+def _radio_question_text(group: Sequence[PageElement]) -> str:
+    labels = {(item.label or "").strip() for item in group if (item.label or "").strip()}
+    if len(labels) == 1:
+        return next(iter(labels))
+    name = (group[0].name or "").strip()
+    if name:
+        return name.replace("_", " ")
+    return next(iter(labels), "")
+
+
+def _radio_question_kind(options: Sequence[str]) -> QuestionKind:
+    folded = frozenset(option.strip().lower() for option in options)
+    if folded in _BOOLEAN_OPTION_PAIRS:
+        return QuestionKind.BOOLEAN
+    return QuestionKind.SINGLE_SELECT
+
+
 def questions_from_elements(elements: Sequence[PageElement]) -> list[ApplicationQuestion]:
     """Map labelled applicant-input controls to questions.
 
     Buttons, links, uploads, navigation, search boxes, and generic
     contenteditable regions stay as :class:`PageElement` only. A question is
     emitted only when a label or accessibility name, an applicant-input role,
-    and a locator all exist.
+    and a locator all exist. Radios that share a ``name`` become one question.
     """
     questions: list[ApplicationQuestion] = []
+    seen_radio_names: set[str] = set()
     for element in elements:
         if not element.locator:
             continue
@@ -222,6 +259,33 @@ def questions_from_elements(elements: Sequence[PageElement]) -> list[Application
         if element.input_type == "contenteditable":
             continue
         if _is_search_control(element):
+            continue
+        if element.role is ElementRole.RADIO and element.name:
+            if element.name in seen_radio_names:
+                continue
+            seen_radio_names.add(element.name)
+            group = [
+                item
+                for item in elements
+                if item.role is ElementRole.RADIO and item.name == element.name
+            ]
+            options: list[str] = []
+            for radio in group:
+                option_text = _radio_option_text(radio, group)
+                if option_text:
+                    options.append(option_text)
+            text = _radio_question_text(group)
+            if not text:
+                continue
+            questions.append(
+                ApplicationQuestion(
+                    text=text,
+                    kind=_radio_question_kind(options),
+                    required=any(item.required for item in group),
+                    options=options,
+                    field_locator=element.locator,
+                )
+            )
             continue
         questions.append(
             ApplicationQuestion(

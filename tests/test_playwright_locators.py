@@ -58,6 +58,36 @@ def test_radio_uses_name_and_value() -> None:
     assert locator == '[name="auth"][value="yes"]'
 
 
+def test_anchor_nth_fallback_matches_href_scan() -> None:
+    locator = build_playwright_locator(
+        PlaywrightControl(tag="a", index_in_type=0),
+        used=set(),
+    )
+    assert locator == "a[href] >> nth=0"
+
+
+def test_contenteditable_nth_fallback_covers_empty_attribute() -> None:
+    locator = build_playwright_locator(
+        PlaywrightControl(tag="div", input_type="contenteditable", index_in_type=0),
+        used=set(),
+    )
+    assert locator == ":is([contenteditable='true'], [contenteditable='']) >> nth=0"
+
+
+def test_role_comboboxes_share_one_nth_range() -> None:
+    elements = elements_from_metadata(
+        [
+            {"tag": "input", "type": "text", "ariaRole": "combobox"},
+            {"tag": "div", "ariaRole": "combobox"},
+        ]
+    )
+    locators = [element.locator for element in elements]
+    assert locators == [
+        "[role='combobox'] >> nth=0",
+        "[role='combobox'] >> nth=1",
+    ]
+
+
 def test_duplicate_candidate_falls_back_to_nth() -> None:
     used = {'[name="email"]'}
     locator = build_playwright_locator(

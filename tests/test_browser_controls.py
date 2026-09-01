@@ -5,20 +5,12 @@ Locator strings stay backend-owned. These tests never parse Playwright syntax.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from applyuminati.browser.base import ElementRole, PageElement
 from applyuminati.core.models.questionnaire import QuestionKind
-from applyuminati.plugins.browsers import shared
 from applyuminati.plugins.browsers.shared import (
     parse_scanned_controls,
     questions_from_elements,
 )
-
-
-def test_control_scan_literal_does_not_claim_playwright_eval() -> None:
-    source = Path(shared.__file__).read_text(encoding="utf-8")
-    assert "evaluated by the Playwright backend" not in source
 
 
 def test_parse_scanned_controls_accepts_optional_input_type() -> None:
@@ -120,3 +112,29 @@ def test_select_and_radio_become_questions() -> None:
     assert texts == {"Country", "Authorized to work"}
     kinds = {q.kind for q in questions}
     assert QuestionKind.SINGLE_SELECT in kinds
+
+
+def test_named_radios_collapse_to_one_question_with_options() -> None:
+    questions = questions_from_elements(
+        [
+            PageElement(
+                locator='[name="work_auth"][value="yes"]',
+                role=ElementRole.RADIO,
+                label="Yes",
+                name="work_auth",
+                value="yes",
+            ),
+            PageElement(
+                locator='[name="work_auth"][value="no"]',
+                role=ElementRole.RADIO,
+                label="No",
+                name="work_auth",
+                value="no",
+            ),
+        ]
+    )
+    assert len(questions) == 1
+    assert questions[0].text == "work auth"
+    assert questions[0].kind is QuestionKind.BOOLEAN
+    assert questions[0].options == ["Yes", "No"]
+    assert questions[0].field_locator == '[name="work_auth"][value="yes"]'

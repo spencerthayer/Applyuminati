@@ -119,12 +119,14 @@ def _css_attr(name: str, value: str) -> str:
 def _nth_group(control: PlaywrightControl) -> str:
     if control.input_type == "contenteditable":
         return "contenteditable"
-    if control.tag == "input" and control.input_type:
-        return f"input:{control.input_type}"
-    if control.tag in _NATIVE_NTH_TAGS:
-        return control.tag
     if control.aria_role:
         return f"role:{control.aria_role}"
+    if control.tag == "input" and control.input_type:
+        return f"input:{control.input_type}"
+    if control.tag == "a":
+        return "a[href]"
+    if control.tag in _NATIVE_NTH_TAGS:
+        return control.tag
     return control.tag
 
 
@@ -132,15 +134,17 @@ def _nth_selector(control: PlaywrightControl) -> str:
     """Selector whose nth index is counted only among matching nodes."""
     n = control.index_in_type
     if control.input_type == "contenteditable":
-        return f"[contenteditable='true'] >> nth={n}"
-    if control.tag == "input" and control.input_type:
-        escaped = control.input_type.replace("'", "\\'")
-        return f"input[type='{escaped}'] >> nth={n}"
-    if control.tag in _NATIVE_NTH_TAGS:
-        return f"{control.tag} >> nth={n}"
+        return f":is([contenteditable='true'], [contenteditable='']) >> nth={n}"
     if control.aria_role:
         escaped = control.aria_role.replace("'", "\\'")
         return f"[role='{escaped}'] >> nth={n}"
+    if control.tag == "input" and control.input_type:
+        escaped = control.input_type.replace("'", "\\'")
+        return f"input[type='{escaped}'] >> nth={n}"
+    if control.tag == "a":
+        return f"a[href] >> nth={n}"
+    if control.tag in _NATIVE_NTH_TAGS:
+        return f"{control.tag} >> nth={n}"
     return f"{control.tag} >> nth={n}"
 
 

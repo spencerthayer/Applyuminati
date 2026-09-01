@@ -590,6 +590,10 @@ class EgoLiteSession:
         """The durable browser identity for this attempt."""
         return self._task_space
 
+    @property
+    def task_space_id(self) -> str | None:
+        return self._task_space.name
+
     # -- plumbing ---------------------------------------------------------
 
     async def _call(self, body: str, *, timeout: float | None = None) -> dict[str, Any]:
@@ -788,8 +792,15 @@ class EgoLiteSession:
             records=locator,
         )
 
-    async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
         """Click a control; ``label`` disambiguates repeated targets."""
+        _ = idempotency_key
         target = self._target(locator)
         options = f", {_js({'label': label})}" if label else ""
         return await self._act("click", _body_action(f"click({_js(target)}{options})"))
@@ -938,6 +949,26 @@ return true;
 # ---------------------------------------------------------------------------
 # Backend
 # ---------------------------------------------------------------------------
+
+
+def _requested_task_space(
+    session_id: str,
+    resume: BrowserCheckpoint | None,
+    requested: str | None,
+) -> TaskSpaceRef:
+    """The task space to open, preferring the name the caller asked for.
+
+    A caller that owns durable execution identity (an application attempt)
+    knows the workspace name that must be re-entered later. Deriving the name
+    from a locally generated session id instead would record a workspace nobody
+    can find again.
+    """
+    resumed = _resume_task_space(session_id, resume)
+    if not requested or requested == resumed.name:
+        return resumed
+    # A different name means a different space, so the recorded numeric id for
+    # the old one would address the wrong workspace.
+    return TaskSpaceRef(name=requested)
 
 
 def _resume_task_space(session_id: str, resume: BrowserCheckpoint | None) -> TaskSpaceRef:
@@ -1102,20 +1133,26 @@ class EgoLiteBackend:
     # -- sessions ---------------------------------------------------------
 
     async def open_session(
-        self, *, session_id: str | None = None, resume: BrowserCheckpoint | None = None
+        self,
+        *,
+        session_id: str | None = None,
+        resume: BrowserCheckpoint | None = None,
+        task_space: str | None = None,
     ) -> EgoLiteSession:
         """Open (or re-enter) a task space and wrap it in a session.
 
-        Resuming prefers the recorded name over the numeric id, because the name
-        is what created the space and is always present, while an id recorded by
-        an older build may be absent or stale.
+        An explicit ``task_space`` wins, because the caller holding durable
+        execution identity is the one that has to find this workspace again.
+        Otherwise resuming prefers the recorded name over the numeric id: the
+        name is what created the space and is always present, while an id
+        recorded by an older build may be absent or stale.
         """
         self._resolve_helper()
         sid = session_id or (resume.session_id if resume else None) or new_ulid()
         session = EgoLiteSession(
             self,
             session_id=sid,
-            task_space=_resume_task_space(sid, resume),
+            task_space=_requested_task_space(sid, resume, task_space),
             surface=await self.detect_surface(),
         )
         if resume:

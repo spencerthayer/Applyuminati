@@ -8,6 +8,7 @@ import pytest
 
 from applyuminati.browser.base import (
     ActionResult,
+    BrowserCapability,
     BrowserCheckpoint,
     ControlOwner,
     ElementRole,
@@ -16,13 +17,19 @@ from applyuminati.browser.base import (
 )
 from applyuminati.browser.host_protocol import CommandMessage, HostCommand, HostErrorCode
 from applyuminati.core.errors import ConfigurationError
-from applyuminati.host.dispatcher import CommandDispatcher, HostSession
+from applyuminati.host.dispatcher import (
+    HOST_UNDISPATCHABLE_CAPABILITIES,
+    CommandDispatcher,
+    HostSession,
+    host_advertised_capabilities,
+)
 from applyuminati.host.security import require_secure_server
 
 
 class _Session:
     session_id = "s1"
     owner = ControlOwner.AGENT
+    task_space_id = "applyuminati:att1"
 
     async def control_state(self) -> ControlOwner:
         return ControlOwner.AGENT
@@ -42,7 +49,14 @@ class _Session:
     async def fill_field(self, locator: str, value: str) -> ActionResult:
         return ActionResult(ok=True, action="fill")
 
-    async def click(self, locator: str, *, label: str | None = None) -> ActionResult:
+    async def click(
+        self,
+        locator: str,
+        *,
+        label: str | None = None,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
+        _ = (label, idempotency_key)
         return ActionResult(ok=True, action="click")
 
     async def select_option(self, locator: str, option: str) -> ActionResult:
@@ -123,6 +137,39 @@ async def test_expired_commands_are_not_executed(tmp_path: Path) -> None:
         ),
     )
     assert result.error_code is HostErrorCode.EXPIRED
+
+
+def test_host_advertisement_drops_capabilities_the_dispatcher_cannot_run() -> None:
+    advertised = host_advertised_capabilities(
+        {
+            BrowserCapability.NAVIGATE,
+            BrowserCapability.HUMAN_HANDOFF,
+            BrowserCapability.JAVASCRIPT_EVAL,
+            BrowserCapability.MULTI_TAB,
+            BrowserCapability.DOWNLOADS,
+        }
+    )
+    assert BrowserCapability.NAVIGATE.value in advertised
+    assert BrowserCapability.HUMAN_HANDOFF.value in advertised
+    assert BrowserCapability.JAVASCRIPT_EVAL.value not in advertised
+    assert BrowserCapability.MULTI_TAB.value not in advertised
+    assert BrowserCapability.DOWNLOADS.value not in advertised
+    assert {
+        BrowserCapability.JAVASCRIPT_EVAL,
+        BrowserCapability.MULTI_TAB,
+        BrowserCapability.DOWNLOADS,
+    } <= HOST_UNDISPATCHABLE_CAPABILITIES
+
+
+async def test_advertise_backends_never_promises_undispatchable_operations() -> None:
+    from applyuminati.core.settings import Settings
+    from applyuminati.host.discovery import advertise_backends
+
+    advertised = await advertise_backends(Settings())
+    forbidden = {item.value for item in HOST_UNDISPATCHABLE_CAPABILITIES}
+    for advertisement in advertised.values():
+        overlap = set(advertisement.capabilities) & forbidden
+        assert overlap == set(), f"{advertisement} advertised {overlap}"
 
 
 async def test_consequential_click_is_deduplicated(tmp_path: Path) -> None:

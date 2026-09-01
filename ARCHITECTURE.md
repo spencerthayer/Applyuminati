@@ -9,17 +9,20 @@ Applyuminati is a local-first, autonomous, LLM-powered job search and applicatio
 Dependency direction enforced by [import-linter](https://github.com/snrk/import-linter) in CI:
 
 ```
-CLI / API  →  services  →  plugins  →  domain packages  →  db  →  core
+CLI | API | host  →  services  →  plugins  →  applications  →  other domain packages  →  db  →  core
 ```
+
+The contract is the import-linter table in `pyproject.toml`. `host` sits with CLI and API because the native Browser Host companion is an entry surface, not a domain package. `applications` is its own layer so application drivers can depend on browser and questionnaire contracts without the reverse.
 
 | Layer | May import | May not import |
 |-------|------------|----------------|
 | `core` | stdlib, pydantic | anything else |
-| `db` | `core`, sqlalchemy | `plugins`, `services`, `api`, `cli` |
-| domain packages (`sources`, `scoring`, `resume`, `llm`, `browser`, `agents`, `email`, `tasks`, `applications`, `memory`) | `core`, `db` | `plugins`, `services`, `api`, `cli` |
-| `plugins` | contracts, `core` | `services`, `api`, `cli` |
+| `db` | `core`, sqlalchemy | `plugins`, `services`, `api`, `cli`, `host` |
+| other domain packages (`sources`, `scoring`, `resume`, `llm`, `browser`, `agents`, `email`, `tasks`, `memory`) | `core`, `db` | `applications`, `plugins`, `services`, `api`, `cli`, `host` |
+| `applications` | other domain packages, `core`, `db` | `plugins`, `services`, `api`, `cli`, `host` |
+| `plugins` | contracts, `core` | `services`, `api`, `cli`, `host` |
 | `services` | everything below it | nothing above it |
-| `api`, `cli` | `services` | `plugins` directly |
+| `api`, `cli`, `host` | `services` | `plugins` directly |
 
 ## Core domain (`applyuminati.core`)
 
@@ -41,6 +44,7 @@ Each extension point defines a Protocol and a Registry:
 | Extension point | Protocol | Registry | Entry-point group |
 |-----------------|-----------|-----------|-------------------|
 | Job sources | `JobSource` | `SOURCE_REGISTRY` | `applyuminati.sources` |
+| Application drivers | `ApplicationDriver` | `APPLICATION_DRIVER_REGISTRY` | `applyuminati.application_drivers` |
 | LLM providers | `LLMProvider` | `LLM_REGISTRY` | `applyuminati.llm` |
 | Browser backends | `BrowserBackend` | `BROWSER_REGISTRY` | `applyuminati.browsers` |
 | Agent runtimes | `AgentBackend` | `AGENT_REGISTRY` | `applyuminati.agents` |

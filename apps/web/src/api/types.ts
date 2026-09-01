@@ -261,7 +261,17 @@ export interface InboxEntry {
   browser_host_id?: string | null;
   browser_session_id?: string | null;
   task_space_id?: string | null;
+  host_presence?: HostPresence;
   opened_at: IsoDateTime;
+}
+
+export type HostPresence = "connected" | "offline" | "session_unavailable" | "not_required";
+
+export interface OpenBrowserResponse {
+  ok: boolean;
+  host_presence: HostPresence;
+  task_space_id?: string | null;
+  detail: string;
 }
 
 export interface ResolveInboxRequest {

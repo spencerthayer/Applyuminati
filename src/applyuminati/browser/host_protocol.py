@@ -118,6 +118,9 @@ class HostCommand(StrEnum):
     """
 
     # -- sessions
+    #: Params: ``backend``, and optionally ``session_id`` and ``task_space`` so
+    #: the caller's durable identity names the workspace instead of the host
+    #: inventing one. Result: ``session_id``, ``backend``, ``task_space_id``.
     CREATE_SESSION = "create_session"
     CLOSE_SESSION = "close_session"
     CHECKPOINT = "checkpoint"

@@ -29,6 +29,9 @@ from applyuminati.plugins.browsers.ego_lite import (
     parse_envelope,
 )
 from applyuminati.plugins.browsers.ego_lite import (
+    _requested_task_space as requested_task_space,
+)
+from applyuminati.plugins.browsers.ego_lite import (
     _resume_task_space as resume_task_space,
 )
 
@@ -159,6 +162,44 @@ def test_resuming_a_checkpoint_without_a_name_falls_back_to_the_session() -> Non
 def test_resuming_without_a_checkpoint_opens_a_fresh_space() -> None:
     ref = resume_task_space(SESSION_ID, None)
     assert ref == TaskSpaceRef.for_session(SESSION_ID)
+
+
+def test_a_caller_supplied_task_space_wins_over_the_session_derived_name() -> None:
+    """The attempt owns the durable name; the session id is incidental.
+
+    Deriving the name from a local session id records a workspace the resume
+    path cannot find again.
+    """
+    ref = requested_task_space(SESSION_ID, None, "applyuminati:att-42")
+    assert ref.name == "applyuminati:att-42"
+    assert ref.numeric_id is None
+
+
+def test_a_requested_name_discards_a_numeric_id_for_a_different_space() -> None:
+    checkpoint = BrowserCheckpoint(
+        session_id=SESSION_ID,
+        url="",
+        backend_state={"task_space_name": "applyuminati:earlier", "task_space_id": 12},
+    )
+    ref = requested_task_space(SESSION_ID, checkpoint, "applyuminati:att-42")
+    assert ref.name == "applyuminati:att-42"
+    assert ref.numeric_id is None
+    same = requested_task_space(SESSION_ID, checkpoint, "applyuminati:earlier")
+    assert same.numeric_id == 12
+
+
+def test_no_requested_name_still_resumes_the_recorded_space() -> None:
+    checkpoint = BrowserCheckpoint(
+        session_id=SESSION_ID,
+        url="",
+        backend_state={"task_space_name": "applyuminati:earlier", "task_space_id": 12},
+    )
+    assert requested_task_space(SESSION_ID, checkpoint, None).name == "applyuminati:earlier"
+
+
+def test_a_session_reports_the_task_space_it_is_driving(settings: Settings) -> None:
+    session, _ = _session(settings, task_space=TaskSpaceRef(name="applyuminati:att-42"))
+    assert session.task_space_id == "applyuminati:att-42"
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from applyuminati.browser.host_protocol import BackendAdvertisement
 from applyuminati.core.platform import current_platform
 from applyuminati.core.registry import HealthState
 from applyuminati.core.settings import Settings
+from applyuminati.host.dispatcher import host_advertised_capabilities
 
 __all__ = ["advertise_backends", "loopback_url"]
 
@@ -33,7 +34,7 @@ async def advertise_backends(settings: Settings) -> dict[str, BackendAdvertiseme
             advertised[descriptor.slug] = BackendAdvertisement(
                 available=False,
                 preferred=descriptor.slug == "ego_lite",
-                capabilities=[item.value for item in metadata.capabilities],
+                capabilities=host_advertised_capabilities(metadata.capabilities),
                 detail=f"{descriptor.slug} does not run on {platform}",
             )
             continue
@@ -43,7 +44,7 @@ async def advertise_backends(settings: Settings) -> dict[str, BackendAdvertiseme
             available=available,
             preferred=descriptor.slug == "ego_lite" and available,
             version=str(health.facts.get("version")) if health.facts.get("version") else None,
-            capabilities=[item.value for item in metadata.capabilities],
+            capabilities=host_advertised_capabilities(metadata.capabilities),
             detail=health.detail or None,
         )
         await backend.aclose()

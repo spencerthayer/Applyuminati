@@ -153,6 +153,10 @@ def _register_builtin_plugins() -> None:
     register_agents()
     register_email_providers()
     register_application_drivers()
+    # Deferred: attempt_tasks imports this module at the top.
+    from applyuminati.services.attempt_tasks import register_attempt_handlers
+
+    register_attempt_handlers()
 
 
 _container: ServiceContainer | None = None

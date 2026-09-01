@@ -57,7 +57,8 @@ driver, which is the point of detecting the driver from the application URL.
 
 | Family | Members |
 |---|---|
-| Direct ATS | Greenhouse, Lever, Ashby, SmartRecruiters, Workable, Recruitee, Teamtailor |
+| Direct ATS | Greenhouse, Lever, Ashby, SmartRecruiters, Workable |
+| Credentialed ATS APIs | Recruitee (Careers API token), Teamtailor (company API key, including Public Read) |
 | Aggregators | LinkedIn, Indeed, Glassdoor, ZipRecruiter, Google Jobs, Dice, Wellfound, Built In |
 | Remote boards | Remote OK, We Work Remotely, Remotive |
 | Public sector | USAJobs |

@@ -153,6 +153,13 @@ def test_data_testid_emits_data_testid_selector() -> None:
     assert elements[0].locator == '[data-testid="email-field"]'
 
 
+def test_dom_uniqueness_flag_skips_ambiguous_name() -> None:
+    elements = elements_from_metadata(
+        [{"tag": "input", "type": "email", "name": "email", "uniqueName": False}]
+    )
+    assert elements[0].locator == "input[type='email'] >> visible=true >> nth=0"
+
+
 def test_aria_label_attribute_is_a_locator_candidate() -> None:
     locator = build_playwright_locator(
         PlaywrightControl(
@@ -278,6 +285,7 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         for element in observation.elements:
             assert await page.locator(element.locator).count() == 1
         assert all(element.name != "hidden_template" for element in observation.elements)
+        assert all(element.name != "ghost_hidden" for element in observation.elements)
         assert all(element.locator != '[name="email"]' for element in observation.elements)
         assert any(element.locator == '[data-qa="work-email"]' for element in observation.elements)
 
@@ -309,6 +317,16 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         picked = await session.fill_field(auth.locator, "no")
         assert picked.ok
         assert await page.locator('input[name="auth"][value="no"]').is_checked()
+
+        country = next(element for element in observation.elements if element.name == "country")
+        selected = await session.fill_field(country.locator, "CA")
+        assert selected.ok
+        assert await page.locator("#country").input_value() == "CA"
+
+        terms = next(element for element in observation.elements if element.name == "terms")
+        agreed = await session.fill_field(terms.locator, "yes")
+        assert agreed.ok
+        assert await page.locator('input[name="terms"]').is_checked()
 
         question_texts = {question.text for question in observation.questions}
         roles = {element.label: element.role for element in observation.elements if element.label}

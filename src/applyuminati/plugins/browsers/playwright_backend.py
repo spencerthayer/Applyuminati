@@ -183,44 +183,57 @@ def _count_matching(
     return sum(1 for peer in peers if predicate(peer))
 
 
-def _peer_unique_selectors(
-    control: PlaywrightControl, peers: Sequence[PlaywrightControl]
+def _flag_or_peer_unique(row: dict[str, Any], key: str, peer_count: int) -> bool:
+    if key in row:
+        return bool(row[key])
+    return peer_count == 1
+
+
+def _unique_selectors(
+    control: PlaywrightControl,
+    peers: Sequence[PlaywrightControl],
+    row: dict[str, Any],
 ) -> set[str]:
-    """Selectors that match exactly one control in the scanned metadata set."""
+    """Selectors that match exactly one node in the live DOM or scanned peers."""
     unique = {_nth_selector(control)}
-    if (
-        control.element_id
-        and _count_matching(peers, lambda p: p.element_id == control.element_id) == 1
+    if control.element_id and _flag_or_peer_unique(
+        row,
+        "uniqueId",
+        _count_matching(peers, lambda p: p.element_id == control.element_id),
     ):
         unique.add(_id_selector(control.element_id))
-    if (
-        control.input_type == "radio"
-        and control.name
-        and control.value is not None
-        and _count_matching(peers, lambda p: p.name == control.name and p.value == control.value)
-        == 1
+    if control.input_type == "radio" and control.name and control.value is not None:
+        if _flag_or_peer_unique(
+            row,
+            "uniqueNameValue",
+            _count_matching(peers, lambda p: p.name == control.name and p.value == control.value),
+        ):
+            unique.add(_css_attr("name", control.name) + _css_attr("value", control.value))
+    elif control.name and _flag_or_peer_unique(
+        row, "uniqueName", _count_matching(peers, lambda p: p.name == control.name)
     ):
-        unique.add(_css_attr("name", control.name) + _css_attr("value", control.value))
-    elif control.name and _count_matching(peers, lambda p: p.name == control.name) == 1:
         unique.add(_css_attr("name", control.name))
-    if (
-        control.aria_label
-        and _count_matching(peers, lambda p: p.aria_label == control.aria_label) == 1
+    if control.aria_label and _flag_or_peer_unique(
+        row, "uniqueAriaLabel", _count_matching(peers, lambda p: p.aria_label == control.aria_label)
     ):
         unique.add(_css_attr("aria-label", control.aria_label))
-    if (
-        control.placeholder
-        and _count_matching(peers, lambda p: p.placeholder == control.placeholder) == 1
+    if control.placeholder and _flag_or_peer_unique(
+        row,
+        "uniquePlaceholder",
+        _count_matching(peers, lambda p: p.placeholder == control.placeholder),
     ):
         unique.add(_css_attr("placeholder", control.placeholder))
     if (
         control.data_attr
         and control.data_value
-        and _count_matching(
-            peers,
-            lambda p: p.data_attr == control.data_attr and p.data_value == control.data_value,
+        and _flag_or_peer_unique(
+            row,
+            "uniqueData",
+            _count_matching(
+                peers,
+                lambda p: p.data_attr == control.data_attr and p.data_value == control.data_value,
+            ),
         )
-        == 1
     ):
         unique.add(_css_attr(control.data_attr, control.data_value))
     return unique
@@ -240,6 +253,9 @@ def build_playwright_locator(
             continue
         return candidate
     return _nth_selector(control)
+
+
+_CHECKBOX_TRUE = frozenset({"yes", "true", "y", "1", "on"})
 
 
 def radio_answer_matches(
@@ -293,26 +309,53 @@ _CONTROL_METADATA_JS = """() => {
     if (el.tagName !== 'SELECT') return [];
     return Array.from(el.options).map((o) => (o.text || '').trim()).filter(Boolean);
   }
+  function cssAttr(name, value) {
+    const escaped = String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+    return '[' + name + '="' + escaped + '"]';
+  }
+  function uniqueCss(sel) {
+    try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; }
+  }
+  function idSelector(id) {
+    return /^[A-Za-z_][\\w-]*$/.test(id) ? ('#' + id) : cssAttr('id', id);
+  }
   const seen = new Set();
   const rows = [];
   document.querySelectorAll(selector).forEach((el) => {
-    if (el.offsetParent === null) return;
+    const style = getComputedStyle(el);
+    if (el.offsetParent === null || style.visibility === 'hidden') return;
     if (seen.has(el)) return;
     seen.add(el);
     const dataTestid = el.getAttribute('data-testid');
     const dataQa = el.getAttribute('data-qa');
+    const dataAttr = dataTestid ? 'data-testid' : (dataQa ? 'data-qa' : null);
+    const dataValue = dataTestid || dataQa;
+    const id = el.id || null;
+    const name = el.getAttribute('name');
+    const value = el.getAttribute('value');
+    const type = (el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : null));
+    const ariaLabel = (el.getAttribute('aria-label') || '').trim() || null;
+    const placeholder = el.getAttribute('placeholder');
+    const idSel = id ? idSelector(id) : null;
     rows.push({
       tag: el.tagName.toLowerCase(),
-      type: (el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : null)),
-      id: el.id || null,
-      name: el.getAttribute('name'),
-      value: el.getAttribute('value'),
-      placeholder: el.getAttribute('placeholder'),
+      type: type,
+      id: id,
+      name: name,
+      value: value,
+      placeholder: placeholder,
       accessibleName: accessibleName(el),
-      ariaLabel: (el.getAttribute('aria-label') || '').trim() || null,
+      ariaLabel: ariaLabel,
       ariaRole: el.getAttribute('role'),
-      dataAttr: dataTestid ? 'data-testid' : (dataQa ? 'data-qa' : null),
-      dataValue: dataTestid || dataQa,
+      dataAttr: dataAttr,
+      dataValue: dataValue,
+      uniqueId: idSel ? uniqueCss(idSel) : false,
+      uniqueName: name ? uniqueCss(cssAttr('name', name)) : false,
+      uniqueNameValue: (String(type).toLowerCase() === 'radio' && name && value != null)
+        ? uniqueCss(cssAttr('name', name) + cssAttr('value', value)) : false,
+      uniqueAriaLabel: ariaLabel ? uniqueCss(cssAttr('aria-label', ariaLabel)) : false,
+      uniquePlaceholder: placeholder ? uniqueCss(cssAttr('placeholder', placeholder)) : false,
+      uniqueData: (dataAttr && dataValue) ? uniqueCss(cssAttr(dataAttr, dataValue)) : false,
       required: el.hasAttribute('required'),
       disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
       contenteditable: el.isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA',
@@ -437,7 +480,7 @@ def elements_from_metadata(rows: Sequence[Any]) -> list[PageElement]:
     used: set[str] = set()
     elements: list[PageElement] = []
     for row, control, role in staged:
-        unique = _peer_unique_selectors(control, peers)
+        unique = _unique_selectors(control, peers, row)
         locator = build_playwright_locator(control, used=used, unique_in_dom=unique)
         used.add(locator)
         elements.append(_page_element(row, control, locator, role))
@@ -546,9 +589,22 @@ class PlaywrightSession(BrowserSession):
     async def fill_field(self, locator: str, value: str) -> ActionResult:
         start = time.perf_counter()
         try:
-            input_type = await self._page.locator(locator).first.get_attribute("type")
-            if (input_type or "").lower() == "radio":
+            target = self._page.locator(locator).first
+            input_type = (await target.get_attribute("type") or "").lower()
+            tag = await target.evaluate("el => el.tagName")
+            if input_type == "radio":
                 return await self._fill_radio(locator, value, start)
+            if input_type == "checkbox":
+                checked = value.strip().casefold() in _CHECKBOX_TRUE
+                await self._page.check(locator) if checked else await self._page.uncheck(locator)
+                return ActionResult(
+                    ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
+                )
+            if tag == "SELECT":
+                await self._page.select_option(locator, value)
+                return ActionResult(
+                    ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
+                )
             await self._page.fill(locator, value)
             return ActionResult(
                 ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
@@ -694,15 +750,6 @@ class PlaywrightSession(BrowserSession):
         except Exception:
             log.warning("playwright.storage_state_not_saved", path=str(destination))
 
-    async def _locator_unique_in_page(self, control: PlaywrightControl, used: set[str]) -> str:
-        """Pick the first candidate that matches exactly one live node."""
-        for candidate in _locator_candidates(control):
-            if candidate in used:
-                continue
-            if await self._page.locator(candidate).count() == 1:
-                return candidate
-        return _nth_selector(control)
-
     async def _extract_controls(self) -> list[PageElement]:
         try:
             rows = await self._page.evaluate(_CONTROL_METADATA_JS)
@@ -711,14 +758,7 @@ class PlaywrightSession(BrowserSession):
             return []
         if not isinstance(rows, list):
             return []
-        staged = _staged_controls(rows)
-        used: set[str] = set()
-        elements: list[PageElement] = []
-        for row, control, role in staged:
-            locator = await self._locator_unique_in_page(control, used)
-            used.add(locator)
-            elements.append(_page_element(row, control, locator, role))
-        return elements
+        return elements_from_metadata(rows)
 
 
 class PlaywrightBackend(BrowserBackend):

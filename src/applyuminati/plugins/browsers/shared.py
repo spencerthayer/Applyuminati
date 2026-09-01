@@ -11,20 +11,23 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from applyuminati.browser.base import ElementRole, PageCondition, PageElement
+from applyuminati.core.models.questionnaire import ApplicationQuestion, QuestionKind
 
 __all__ = [
     "CONTROL_SCAN_CALL_LITERAL",
     "MAX_TEXT_CHARS",
     "detect_condition",
     "parse_scanned_controls",
+    "questions_from_elements",
     "split_locator",
 ]
 
 #: JS expression that scans for interactive controls. Injected into ego lite
-#: scripts and evaluated by the Playwright backend's JS eval.
+#: scripts. Playwright builds its own locators and does not evaluate this.
 CONTROL_SCAN_CALL_LITERAL = """(function() {
   const controls = [];
   const sel = 'input, textarea, select, button, a[href], [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"]';
@@ -154,9 +157,82 @@ def parse_scanned_controls(scan: Any) -> list[PageElement]:
                 disabled=bool(item.get("disabled")),
                 options=item.get("options") or [],
                 error_text=item.get("errorText"),
+                input_type=item.get("input_type") or item.get("inputType"),
             )
         )
     return elements
+
+
+_APPLICANT_INPUT_ROLES: frozenset[ElementRole] = frozenset(
+    {
+        ElementRole.TEXTBOX,
+        ElementRole.TEXTAREA,
+        ElementRole.SELECT,
+        ElementRole.CHECKBOX,
+        ElementRole.RADIO,
+    }
+)
+_SEARCH_RE = re.compile(r"\bsearch\b", re.I)
+
+
+def _is_search_control(element: PageElement) -> bool:
+    if element.input_type == "search":
+        return True
+    haystack = " ".join(part for part in (element.label, element.name, element.placeholder) if part)
+    return bool(_SEARCH_RE.search(haystack))
+
+
+_ROLE_QUESTION_KINDS: dict[ElementRole, QuestionKind] = {
+    ElementRole.TEXTAREA: QuestionKind.LONG_TEXT,
+    ElementRole.SELECT: QuestionKind.SINGLE_SELECT,
+    ElementRole.CHECKBOX: QuestionKind.BOOLEAN,
+    ElementRole.RADIO: QuestionKind.SINGLE_SELECT,
+}
+_INPUT_QUESTION_KINDS: dict[str, QuestionKind] = {
+    "number": QuestionKind.NUMBER,
+    "date": QuestionKind.DATE,
+    "url": QuestionKind.URL,
+}
+
+
+def _question_kind(element: PageElement) -> QuestionKind:
+    role_kind = _ROLE_QUESTION_KINDS.get(element.role)
+    if role_kind is not None:
+        return role_kind
+    return _INPUT_QUESTION_KINDS.get(element.input_type or "", QuestionKind.SHORT_TEXT)
+
+
+def questions_from_elements(elements: Sequence[PageElement]) -> list[ApplicationQuestion]:
+    """Map labelled applicant-input controls to questions.
+
+    Buttons, links, uploads, navigation, search boxes, and generic
+    contenteditable regions stay as :class:`PageElement` only. A question is
+    emitted only when a label or accessibility name, an applicant-input role,
+    and a locator all exist.
+    """
+    questions: list[ApplicationQuestion] = []
+    for element in elements:
+        if not element.locator:
+            continue
+        if element.role not in _APPLICANT_INPUT_ROLES:
+            continue
+        label = (element.label or "").strip()
+        if not label:
+            continue
+        if element.input_type == "contenteditable":
+            continue
+        if _is_search_control(element):
+            continue
+        questions.append(
+            ApplicationQuestion(
+                text=label,
+                kind=_question_kind(element),
+                required=element.required,
+                options=list(element.options),
+                field_locator=element.locator,
+            )
+        )
+    return questions
 
 
 def split_locator(locator: str) -> tuple[str, str]:

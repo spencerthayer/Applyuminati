@@ -152,6 +152,7 @@ ignore = [
 "src/applyuminati/api/routers/**" = ["PLR0917"]
 "src/applyuminati/db/migrations/**" = ["ANN", "I001", "PLR0915"]
 "src/applyuminati/plugins/browsers/shared.py" = ["E501"] # embedded JS literal
+"src/applyuminati/plugins/browsers/playwright_backend.py" = ["E501"] # embedded JS literal
 "src/applyuminati/plugins/browsers/ego_lite.py" = ["ASYNC109", "ASYNC240"] # timeout is a Protocol-mandated kwarg; path checks are single stat calls
 # ASYNC109: the deadline also travels on the wire, so the host refuses a command
 # we have already abandoned. asyncio.timeout would only cancel our side and leave

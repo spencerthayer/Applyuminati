@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Playwright form fixture</title>
+</head>
+<body>
+  <form>
+    <label for="first">First name</label>
+    <input id="first" name="first" type="text" required>
+
+    <label>Last name <input name="last" type="text"></label>
+
+    <input type="text">
+    <input type="text">
+
+    <input type="radio" name="auth" value="yes" aria-label="Authorized to work">
+    <input type="radio" name="auth" value="no" aria-label="Not authorized to work">
+
+    <label for="country">Country</label>
+    <select id="country" name="country">
+      <option>US</option>
+      <option>CA</option>
+    </select>
+
+    <input type="text" role="combobox" aria-label="Job title" name="title">
+    <div role="combobox" aria-label="Department">Engineering</div>
+
+    <label>Upload resume <input type="file" name="resume"></label>
+    <div contenteditable="true" aria-label="Notes">draft</div>
+    <input type="search" name="q" placeholder="Search jobs" aria-label="Search jobs">
+    <button type="button">Next</button>
+  </form>
+</body>
+</html>

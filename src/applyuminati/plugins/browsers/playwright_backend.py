@@ -7,7 +7,10 @@ message when the import fails or browsers are not downloaded.
 
 from __future__ import annotations
 
+import re
 import time
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +32,22 @@ from applyuminati.core.ids import new_ulid
 from applyuminati.core.logging import get_logger
 from applyuminati.core.registry import HealthReport, HealthState, PluginMaturity
 from applyuminati.core.settings import Settings
+from applyuminati.plugins.browsers.shared import (
+    MAX_TEXT_CHARS,
+    detect_condition,
+    questions_from_elements,
+)
 
 log = get_logger(__name__)
 
-__all__ = ["PLUGIN", "PlaywrightBackend", "PlaywrightSession"]
+__all__ = [
+    "PLUGIN",
+    "PlaywrightBackend",
+    "PlaywrightControl",
+    "PlaywrightSession",
+    "build_playwright_locator",
+    "elements_from_metadata",
+]
 
 #: What this backend can do regardless of configuration.
 #:
@@ -76,6 +91,245 @@ def _metadata(settings: Settings | None = None) -> BrowserMetadata:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class PlaywrightControl:
+    """Attributes Playwright uses to build a backend-owned locator string."""
+
+    tag: str
+    input_type: str | None = None
+    element_id: str | None = None
+    name: str | None = None
+    value: str | None = None
+    aria_label: str | None = None
+    placeholder: str | None = None
+    data_testid: str | None = None
+    aria_role: str | None = None
+    index_in_type: int = 0
+
+
+_CSS_ID_RE = re.compile(r"^[A-Za-z_][\w-]*$")
+_NATIVE_NTH_TAGS = frozenset({"input", "textarea", "select", "button", "a"})
+
+
+def _css_attr(name: str, value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'[{name}="{escaped}"]'
+
+
+def _nth_group(control: PlaywrightControl) -> str:
+    if control.input_type == "contenteditable":
+        return "contenteditable"
+    if control.tag == "input" and control.input_type:
+        return f"input:{control.input_type}"
+    if control.tag in _NATIVE_NTH_TAGS:
+        return control.tag
+    if control.aria_role:
+        return f"role:{control.aria_role}"
+    return control.tag
+
+
+def _nth_selector(control: PlaywrightControl) -> str:
+    """Selector whose nth index is counted only among matching nodes."""
+    n = control.index_in_type
+    if control.input_type == "contenteditable":
+        return f"[contenteditable='true'] >> nth={n}"
+    if control.tag == "input" and control.input_type:
+        escaped = control.input_type.replace("'", "\\'")
+        return f"input[type='{escaped}'] >> nth={n}"
+    if control.tag in _NATIVE_NTH_TAGS:
+        return f"{control.tag} >> nth={n}"
+    if control.aria_role:
+        escaped = control.aria_role.replace("'", "\\'")
+        return f"[role='{escaped}'] >> nth={n}"
+    return f"{control.tag} >> nth={n}"
+
+
+def build_playwright_locator(control: PlaywrightControl, *, used: set[str]) -> str:
+    """Return a unique Playwright selector string for one control."""
+    candidates: list[str] = []
+    if control.element_id:
+        if _CSS_ID_RE.match(control.element_id):
+            candidates.append(f"#{control.element_id}")
+        else:
+            candidates.append(_css_attr("id", control.element_id))
+    if control.input_type == "radio" and control.name and control.value is not None:
+        candidates.append(_css_attr("name", control.name) + _css_attr("value", control.value))
+    elif control.name:
+        candidates.append(_css_attr("name", control.name))
+    if control.aria_label:
+        candidates.append(_css_attr("aria-label", control.aria_label))
+    if control.placeholder:
+        candidates.append(_css_attr("placeholder", control.placeholder))
+    if control.data_testid:
+        candidates.append(_css_attr("data-testid", control.data_testid))
+    candidates.append(_nth_selector(control))
+    for candidate in candidates:
+        if candidate not in used:
+            return candidate
+    return _nth_selector(control)
+
+
+#: Playwright-only metadata scrape. Locator strings are built in Python.
+_CONTROL_METADATA_JS = """() => {
+  const selector = [
+    'input:not([type="hidden"])',
+    'textarea',
+    'select',
+    'button',
+    'a[href]',
+    '[contenteditable="true"]',
+    '[contenteditable=""]',
+    '[role="combobox"]',
+    '[role="textbox"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="button"]',
+    '[role="link"]'
+  ].join(', ');
+  function accessibleName(el) {
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria;
+    if (el.id) {
+      const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (lab) return (lab.innerText || '').trim();
+    }
+    const wrap = el.closest('label');
+    if (wrap) {
+      const clone = wrap.cloneNode(true);
+      clone.querySelectorAll('input, textarea, select, button').forEach((n) => n.remove());
+      return (clone.innerText || '').trim();
+    }
+    if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute('role') === 'button') {
+      return (el.innerText || el.textContent || '').trim() || null;
+    }
+    return null;
+  }
+  function optionsFor(el) {
+    if (el.tagName !== 'SELECT') return [];
+    return Array.from(el.options).map((o) => (o.text || '').trim()).filter(Boolean);
+  }
+  const seen = new Set();
+  const rows = [];
+  document.querySelectorAll(selector).forEach((el) => {
+    if (seen.has(el)) return;
+    seen.add(el);
+    rows.push({
+      tag: el.tagName.toLowerCase(),
+      type: (el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : null)),
+      id: el.id || null,
+      name: el.getAttribute('name'),
+      value: el.getAttribute('value'),
+      placeholder: el.getAttribute('placeholder'),
+      accessibleName: accessibleName(el),
+      ariaLabel: (el.getAttribute('aria-label') || '').trim() || null,
+      ariaRole: el.getAttribute('role'),
+      dataTestid: el.getAttribute('data-testid') || el.getAttribute('data-qa'),
+      required: el.hasAttribute('required'),
+      disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
+      contenteditable: el.isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA',
+      options: optionsFor(el)
+    });
+  });
+  return rows;
+}"""
+
+
+_BUTTON_INPUT_TYPES = frozenset({"submit", "button", "reset", "image"})
+
+
+def _classify_control(row: dict[str, Any]) -> tuple[ElementRole, str | None]:
+    tag = str(row.get("tag") or "")
+    raw_type = row.get("type")
+    input_type = str(raw_type).lower() if raw_type else None
+    aria_role = (str(row.get("ariaRole") or "")).lower() or None
+    role = ElementRole.TEXTBOX
+    if row.get("contenteditable"):
+        return ElementRole.TEXTBOX, "contenteditable"
+    if tag == "select" or (aria_role == "combobox" and tag not in {"input", "textarea"}):
+        role = ElementRole.SELECT
+    elif tag == "textarea":
+        role = ElementRole.TEXTAREA
+    elif tag == "button" or input_type in _BUTTON_INPUT_TYPES:
+        role = ElementRole.BUTTON
+    elif tag == "a" or aria_role == "link":
+        role = ElementRole.LINK
+    elif input_type == "file":
+        role = ElementRole.FILE_INPUT
+        input_type = "file"
+    elif input_type == "checkbox" or aria_role == "checkbox":
+        role = ElementRole.CHECKBOX
+        input_type = input_type or "checkbox"
+    elif input_type == "radio" or aria_role == "radio":
+        role = ElementRole.RADIO
+        input_type = input_type or "radio"
+    elif aria_role == "combobox":
+        input_type = input_type or "combobox"
+    elif aria_role == "button":
+        role = ElementRole.BUTTON
+    else:
+        input_type = input_type or ("text" if tag == "input" else None)
+    return role, input_type
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+def elements_from_metadata(rows: Sequence[Any]) -> list[PageElement]:
+    """Turn Playwright metadata rows into uniquely addressed page elements."""
+    used: set[str] = set()
+    group_counts: dict[str, int] = {}
+    elements: list[PageElement] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        role, input_type = _classify_control(row)
+        tag = str(row.get("tag") or "")
+        aria_role = _optional_str(row.get("ariaRole"))
+        if aria_role:
+            aria_role = aria_role.lower()
+        staged = PlaywrightControl(
+            tag=tag,
+            input_type=input_type,
+            element_id=_optional_str(row.get("id")),
+            name=_optional_str(row.get("name")),
+            value=None if row.get("value") is None else str(row.get("value")),
+            aria_label=_optional_str(row.get("ariaLabel")),
+            placeholder=_optional_str(row.get("placeholder")),
+            data_testid=_optional_str(row.get("dataTestid")),
+            aria_role=aria_role,
+        )
+        group = _nth_group(staged)
+        index = group_counts.get(group, 0)
+        group_counts[group] = index + 1
+        control = replace(staged, index_in_type=index)
+        locator = build_playwright_locator(control, used=used)
+        used.add(locator)
+        accessible = _optional_str(row.get("accessibleName")) or control.aria_label
+        options_raw = row.get("options") or []
+        options = (
+            [str(item) for item in options_raw if item] if isinstance(options_raw, list) else []
+        )
+        elements.append(
+            PageElement(
+                locator=locator,
+                role=role,
+                label=accessible,
+                name=control.name,
+                value=control.value,
+                placeholder=control.placeholder,
+                required=bool(row.get("required")),
+                disabled=bool(row.get("disabled")),
+                options=options,
+                input_type=input_type,
+            )
+        )
+    return elements
+
+
 class PlaywrightSession(BrowserSession):
     def __init__(self, page: Any, browser: Any, session_id: str, settings: Settings) -> None:
         self._page = page
@@ -105,14 +359,27 @@ class PlaywrightSession(BrowserSession):
         url = self._page.url
         title = await self._page.title()
         text = await self._page.inner_text("body") if include_text else None
+        if text is not None:
+            text = text[:MAX_TEXT_CHARS]
         elements = await self._extract_controls()
-        condition = self._detect_condition(url, text or "")
+        has_password_field = any(
+            element.input_type == "password" or (element.name or "").lower() == "password"
+            for element in elements
+        )
+        validation_errors = [element.error_text for element in elements if element.error_text]
         return PageObservation(
             url=url,
             title=title,
             text=text,
             elements=elements,
-            condition=condition,
+            questions=questions_from_elements(elements),
+            condition=detect_condition(
+                url,
+                text,
+                has_password_field=has_password_field,
+                validation_errors=validation_errors,
+            ),
+            validation_errors=validation_errors,
         )
 
     async def find_controls(self, *, role: ElementRole | None = None) -> list[PageElement]:
@@ -270,66 +537,14 @@ class PlaywrightSession(BrowserSession):
             log.warning("playwright.storage_state_not_saved", path=str(destination))
 
     async def _extract_controls(self) -> list[PageElement]:
-        elements: list[PageElement] = []
-        for selector, role in [
-            ("input[type='text']", ElementRole.TEXTBOX),
-            ("input[type='email']", ElementRole.TEXTBOX),
-            ("textarea", ElementRole.TEXTAREA),
-            ("select", ElementRole.SELECT),
-            ("input[type='checkbox']", ElementRole.CHECKBOX),
-            ("input[type='radio']", ElementRole.RADIO),
-            ("button", ElementRole.BUTTON),
-            ("a", ElementRole.LINK),
-            ("input[type='file']", ElementRole.FILE_INPUT),
-        ]:
-            handles = await self._page.query_selector_all(selector)
-            for handle in handles:
-                label = (
-                    await handle.get_attribute("aria-label")
-                    or await handle.get_attribute("name")
-                    or await handle.get_attribute("placeholder")
-                )
-                name = await handle.get_attribute("name")
-                value = await handle.get_attribute("value")
-                required = await handle.get_attribute("required") is not None
-                disabled = await handle.get_attribute("disabled") is not None
-                placeholder = await handle.get_attribute("placeholder")
-                options: list[str] = []
-                if role is ElementRole.SELECT:
-                    option_handles = await handle.query_selector_all("option")
-                    for opt in option_handles:
-                        text = await opt.inner_text()
-                        if text:
-                            options.append(text.strip())
-                elements.append(
-                    PageElement(
-                        locator=selector,
-                        role=role,
-                        label=label,
-                        name=name,
-                        value=value,
-                        placeholder=placeholder,
-                        required=required,
-                        disabled=disabled,
-                        options=options,
-                    )
-                )
-        return elements
-
-    @staticmethod
-    def _detect_condition(url: str, text: str) -> PageCondition:
-        lowered = text.lower()[:5000]
-        if any(marker in lowered for marker in ["captcha", "are you a robot", "please verify"]):
-            return PageCondition.HUMAN_CHALLENGE
-        if any(
-            marker in lowered for marker in ["sign in", "log in", "please log in", "login required"]
-        ):
-            return PageCondition.LOGIN_REQUIRED
-        if any(marker in lowered for marker in ["access denied", "blocked", "bot detection"]):
-            return PageCondition.AUTOMATION_BLOCKED
-        if "404" in lowered or "not found" in lowered:
-            return PageCondition.NOT_FOUND
-        return PageCondition.OK
+        try:
+            rows = await self._page.evaluate(_CONTROL_METADATA_JS)
+        except Exception:
+            log.debug("playwright.control_scan_failed", exc_info=True)
+            return []
+        if not isinstance(rows, list):
+            return []
+        return elements_from_metadata(rows)
 
 
 class PlaywrightBackend(BrowserBackend):

@@ -249,6 +249,8 @@ def questions_from_elements(elements: Sequence[PageElement]) -> list[Application
             continue
         if element.role not in _APPLICANT_INPUT_ROLES:
             continue
+        if element.disabled:
+            continue
         label = (element.label or "").strip()
         if not label:
             continue

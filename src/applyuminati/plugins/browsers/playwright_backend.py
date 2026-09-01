@@ -228,6 +228,7 @@ _CONTROL_METADATA_JS = """() => {
   const seen = new Set();
   const rows = [];
   document.querySelectorAll(selector).forEach((el) => {
+    if (el.offsetParent === null && el.tagName !== 'INPUT') return;
     if (seen.has(el)) return;
     seen.add(el);
     rows.push({

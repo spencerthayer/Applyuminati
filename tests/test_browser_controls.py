@@ -104,6 +104,20 @@ def test_unlabeled_input_is_not_a_question() -> None:
     assert questions == []
 
 
+def test_disabled_labeled_input_is_not_a_question() -> None:
+    questions = questions_from_elements(
+        [
+            PageElement(
+                locator="#nua",
+                role=ElementRole.TEXTBOX,
+                label="Are you authorized to work?",
+                disabled=True,
+            )
+        ]
+    )
+    assert questions == []
+
+
 def test_select_and_radio_become_questions() -> None:
     questions = questions_from_elements(
         [

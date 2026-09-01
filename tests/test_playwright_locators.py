@@ -9,6 +9,7 @@ import pytest
 from applyuminati.browser.base import ElementRole
 from applyuminati.core.settings import Settings
 from applyuminati.plugins.browsers.playwright_backend import (
+    _CONTROL_METADATA_JS,
     PlaywrightBackend,
     PlaywrightControl,
     PlaywrightSession,
@@ -98,6 +99,28 @@ def test_contenteditable_with_role_uses_role_nth() -> None:
     assert by_label["Notes"] == expected
 
 
+def test_scan_selector_includes_searchbox_role() -> None:
+    assert '[role="searchbox"]' in _CONTROL_METADATA_JS
+
+
+def test_searchbox_roles_share_one_nth_range() -> None:
+    elements = elements_from_metadata(
+        [
+            {"tag": "div", "ariaRole": "searchbox", "accessibleName": "Site search"},
+            {
+                "tag": "input",
+                "type": "text",
+                "ariaRole": "searchbox",
+                "accessibleName": "Query searchbox",
+            },
+        ]
+    )
+    assert [element.locator for element in elements] == [
+        "[role='searchbox'] >> visible=true >> nth=0",
+        "[role='searchbox'] >> visible=true >> nth=1",
+    ]
+
+
 def test_searchbox_role_is_not_a_question() -> None:
     elements = elements_from_metadata(
         [
@@ -111,6 +134,57 @@ def test_searchbox_role_is_not_a_question() -> None:
     )
     assert elements[0].input_type == "search"
     assert questions_from_elements(elements) == []
+
+
+def test_custom_aria_widgets_are_elements_not_questions() -> None:
+    elements = elements_from_metadata(
+        [
+            {
+                "tag": "div",
+                "ariaRole": "radio",
+                "name": "auth",
+                "accessibleName": "ARIA yes",
+            },
+            {
+                "tag": "div",
+                "ariaRole": "checkbox",
+                "accessibleName": "ARIA terms",
+            },
+            {
+                "tag": "div",
+                "ariaRole": "combobox",
+                "accessibleName": "Department",
+            },
+            {
+                "tag": "input",
+                "type": "radio",
+                "name": "native_auth",
+                "value": "yes",
+                "accessibleName": "Yes",
+            },
+            {
+                "tag": "input",
+                "type": "checkbox",
+                "name": "terms",
+                "accessibleName": "I agree",
+            },
+            {
+                "tag": "select",
+                "id": "country",
+                "accessibleName": "Country",
+                "options": ["US"],
+            },
+        ]
+    )
+    by_label = {element.label: element for element in elements}
+    assert by_label["ARIA yes"].role is ElementRole.RADIO
+    assert by_label["ARIA yes"].input_type == "aria-radio"
+    assert by_label["ARIA terms"].role is ElementRole.CHECKBOX
+    assert by_label["ARIA terms"].input_type == "aria-checkbox"
+    assert by_label["Department"].role is ElementRole.SELECT
+    assert by_label["Department"].input_type == "combobox"
+    question_texts = {question.text for question in questions_from_elements(elements)}
+    assert question_texts == {"Yes", "I agree", "Country"}
 
 
 def test_contenteditable_nth_fallback_covers_empty_attribute() -> None:
@@ -331,7 +405,7 @@ def test_metadata_rows_produce_unique_locators_and_conservative_questions() -> N
     assert "First name" in question_texts
     assert "Authorized to work" in question_texts
     assert "Job title" in question_texts
-    assert "Department" in question_texts
+    assert "Department" not in question_texts
     assert "Next" not in question_texts
     assert "Search jobs" not in question_texts
     assert "Upload resume" not in question_texts
@@ -413,6 +487,22 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         assert "Search jobs" not in question_texts
         assert "Upload resume" not in question_texts
         assert "Notes" not in question_texts
+        assert "Department" not in question_texts
+        assert "ARIA yes" not in question_texts
+        assert "ARIA terms" not in question_texts
+        assert "Site search" not in question_texts
+        assert "Query searchbox" not in question_texts
+        department = next(
+            element for element in observation.elements if element.label == "Department"
+        )
+        assert department.role is ElementRole.SELECT
+        assert any(element.label == "ARIA yes" for element in observation.elements)
+        assert any(element.label == "ARIA terms" for element in observation.elements)
+        assert any(element.label == "Site search" for element in observation.elements)
+        query_search = next(
+            element for element in observation.elements if element.label == "Query searchbox"
+        )
+        assert query_search.input_type == "search"
     finally:
         await session.close()
         await backend.aclose()

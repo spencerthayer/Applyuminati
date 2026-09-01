@@ -178,6 +178,15 @@ def _is_search_control(element: PageElement) -> bool:
     return element.input_type == "search"
 
 
+def _is_unsupported_custom_widget(element: PageElement) -> bool:
+    """True for ARIA radio/checkbox/combobox widgets fill_field cannot drive."""
+    return (
+        (element.role is ElementRole.RADIO and element.input_type == "aria-radio")
+        or (element.role is ElementRole.CHECKBOX and element.input_type == "aria-checkbox")
+        or (element.role is ElementRole.SELECT and element.input_type == "combobox")
+    )
+
+
 _ROLE_QUESTION_KINDS: dict[ElementRole, QuestionKind] = {
     ElementRole.TEXTAREA: QuestionKind.LONG_TEXT,
     ElementRole.SELECT: QuestionKind.SINGLE_SELECT,
@@ -237,10 +246,11 @@ def _radio_question_kind(options: Sequence[str]) -> QuestionKind:
 def questions_from_elements(elements: Sequence[PageElement]) -> list[ApplicationQuestion]:
     """Map labelled applicant-input controls to questions.
 
-    Buttons, links, uploads, navigation, search boxes, and generic
-    contenteditable regions stay as :class:`PageElement` only. A question is
-    emitted only when a label or accessibility name, an applicant-input role,
-    and a locator all exist. Radios that share a ``name`` become one question.
+    Buttons, links, uploads, navigation, search boxes, generic
+    contenteditable regions, and custom ARIA radio/checkbox/combobox
+    widgets stay as :class:`PageElement` only. A question is emitted only
+    when a label or accessibility name, an applicant-input role, and a
+    locator all exist. Radios that share a ``name`` become one question.
     """
     questions: list[ApplicationQuestion] = []
     seen_radio_names: set[str] = set()
@@ -249,7 +259,7 @@ def questions_from_elements(elements: Sequence[PageElement]) -> list[Application
             continue
         if element.role not in _APPLICANT_INPUT_ROLES:
             continue
-        if element.disabled:
+        if element.disabled or _is_unsupported_custom_widget(element):
             continue
         label = (element.label or "").strip()
         if not label:
@@ -265,7 +275,10 @@ def questions_from_elements(elements: Sequence[PageElement]) -> list[Application
             group = [
                 item
                 for item in elements
-                if item.role is ElementRole.RADIO and item.name == element.name
+                if item.role is ElementRole.RADIO
+                and item.name == element.name
+                and not item.disabled
+                and not _is_unsupported_custom_widget(item)
             ]
             options: list[str] = []
             for radio in group:

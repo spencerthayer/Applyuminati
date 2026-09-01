@@ -166,3 +166,61 @@ def test_named_radios_collapse_to_one_question_with_options() -> None:
     assert questions[0].kind is QuestionKind.BOOLEAN
     assert questions[0].options == ["Yes", "No"]
     assert questions[0].field_locator == '[name="work_auth"][value="yes"]'
+
+
+def test_disabled_radio_is_omitted_from_grouped_options() -> None:
+    questions = questions_from_elements(
+        [
+            PageElement(
+                locator='[name="work_auth"][value="yes"]',
+                role=ElementRole.RADIO,
+                label="Yes",
+                name="work_auth",
+                value="yes",
+            ),
+            PageElement(
+                locator='[name="work_auth"][value="na"]',
+                role=ElementRole.RADIO,
+                label="Not applicable",
+                name="work_auth",
+                value="na",
+                disabled=True,
+            ),
+            PageElement(
+                locator='[name="work_auth"][value="no"]',
+                role=ElementRole.RADIO,
+                label="No",
+                name="work_auth",
+                value="no",
+            ),
+        ]
+    )
+    assert len(questions) == 1
+    assert questions[0].options == ["Yes", "No"]
+
+
+def test_custom_aria_widgets_are_not_questions() -> None:
+    questions = questions_from_elements(
+        [
+            PageElement(
+                locator="[role='radio'] >> nth=0",
+                role=ElementRole.RADIO,
+                label="ARIA yes",
+                name="auth",
+                input_type="aria-radio",
+            ),
+            PageElement(
+                locator="[role='checkbox'] >> nth=0",
+                role=ElementRole.CHECKBOX,
+                label="ARIA terms",
+                input_type="aria-checkbox",
+            ),
+            PageElement(
+                locator="[role='combobox'] >> nth=0",
+                role=ElementRole.SELECT,
+                label="Department",
+                input_type="combobox",
+            ),
+        ]
+    )
+    assert questions == []

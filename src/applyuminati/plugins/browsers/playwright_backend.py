@@ -285,6 +285,7 @@ def radio_answer_matches(
 
 
 #: Playwright-only metadata scrape. Locator strings are built in Python.
+#: Role selectors here must stay in sync with every role `_nth_group` buckets.
 _CONTROL_METADATA_JS = """() => {
   const selector = [
     'input:not([type="hidden"])',
@@ -296,6 +297,7 @@ _CONTROL_METADATA_JS = """() => {
     '[contenteditable=""]',
     '[role="combobox"]',
     '[role="textbox"]',
+    '[role="searchbox"]',
     '[role="checkbox"]',
     '[role="radio"]',
     '[role="button"]',
@@ -385,6 +387,38 @@ _CONTROL_METADATA_JS = """() => {
 _BUTTON_INPUT_TYPES = frozenset({"submit", "button", "reset", "image"})
 
 
+def _classify_toggle(
+    input_type: str | None, aria_role: str | None
+) -> tuple[ElementRole, str | None] | None:
+    if input_type == "checkbox":
+        return ElementRole.CHECKBOX, input_type
+    if aria_role == "checkbox":
+        return ElementRole.CHECKBOX, "aria-checkbox"
+    if input_type == "radio":
+        return ElementRole.RADIO, input_type
+    if aria_role == "radio":
+        return ElementRole.RADIO, "aria-radio"
+    return None
+
+
+def _classify_remaining(
+    tag: str, input_type: str | None, aria_role: str | None
+) -> tuple[ElementRole, str | None]:
+    toggle = _classify_toggle(input_type, aria_role)
+    if toggle is not None:
+        return toggle
+    role = ElementRole.TEXTBOX
+    if aria_role == "combobox":
+        input_type = input_type or "combobox"
+    elif aria_role == "searchbox":
+        input_type = "search"
+    elif aria_role == "button":
+        role = ElementRole.BUTTON
+    else:
+        input_type = input_type or ("text" if tag == "input" else None)
+    return role, input_type
+
+
 def _classify_control(row: dict[str, Any]) -> tuple[ElementRole, str | None]:
     tag = str(row.get("tag") or "")
     raw_type = row.get("type")
@@ -393,8 +427,11 @@ def _classify_control(row: dict[str, Any]) -> tuple[ElementRole, str | None]:
     role = ElementRole.TEXTBOX
     if row.get("contenteditable"):
         return ElementRole.TEXTBOX, "contenteditable"
-    if tag == "select" or (aria_role == "combobox" and tag not in {"input", "textarea"}):
+    if tag == "select":
         role = ElementRole.SELECT
+    elif aria_role == "combobox" and tag not in {"input", "textarea"}:
+        role = ElementRole.SELECT
+        input_type = "combobox"
     elif tag == "textarea":
         role = ElementRole.TEXTAREA
     elif tag == "button" or input_type in _BUTTON_INPUT_TYPES:
@@ -404,20 +441,8 @@ def _classify_control(row: dict[str, Any]) -> tuple[ElementRole, str | None]:
     elif input_type == "file":
         role = ElementRole.FILE_INPUT
         input_type = "file"
-    elif input_type == "checkbox" or aria_role == "checkbox":
-        role = ElementRole.CHECKBOX
-        input_type = input_type or "checkbox"
-    elif input_type == "radio" or aria_role == "radio":
-        role = ElementRole.RADIO
-        input_type = input_type or "radio"
-    elif aria_role == "combobox":
-        input_type = input_type or "combobox"
-    elif aria_role == "searchbox":
-        input_type = "search"
-    elif aria_role == "button":
-        role = ElementRole.BUTTON
     else:
-        input_type = input_type or ("text" if tag == "input" else None)
+        return _classify_remaining(tag, input_type, aria_role)
     return role, input_type
 
 

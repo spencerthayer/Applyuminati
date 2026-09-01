@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -103,7 +103,8 @@ class PlaywrightControl:
     value: str | None = None
     aria_label: str | None = None
     placeholder: str | None = None
-    data_testid: str | None = None
+    data_attr: str | None = None
+    data_value: str | None = None
     aria_role: str | None = None
     index_in_type: int = 0
 
@@ -151,14 +152,17 @@ def _nth_selector(control: PlaywrightControl) -> str:
     return f"{base} >> visible=true >> nth={n}"
 
 
-def build_playwright_locator(control: PlaywrightControl, *, used: set[str]) -> str:
-    """Return a unique Playwright selector string for one control."""
+def _id_selector(element_id: str) -> str:
+    if _CSS_ID_RE.match(element_id):
+        return f"#{element_id}"
+    return _css_attr("id", element_id)
+
+
+def _locator_candidates(control: PlaywrightControl) -> list[str]:
+    """Attribute selectors that may address this control. nth is separate."""
     candidates: list[str] = []
     if control.element_id:
-        if _CSS_ID_RE.match(control.element_id):
-            candidates.append(f"#{control.element_id}")
-        else:
-            candidates.append(_css_attr("id", control.element_id))
+        candidates.append(_id_selector(control.element_id))
     if control.input_type == "radio" and control.name and control.value is not None:
         candidates.append(_css_attr("name", control.name) + _css_attr("value", control.value))
     elif control.name:
@@ -167,12 +171,74 @@ def build_playwright_locator(control: PlaywrightControl, *, used: set[str]) -> s
         candidates.append(_css_attr("aria-label", control.aria_label))
     if control.placeholder:
         candidates.append(_css_attr("placeholder", control.placeholder))
-    if control.data_testid:
-        candidates.append(_css_attr("data-testid", control.data_testid))
-    candidates.append(_nth_selector(control))
-    for candidate in candidates:
-        if candidate not in used:
-            return candidate
+    if control.data_attr and control.data_value:
+        candidates.append(_css_attr(control.data_attr, control.data_value))
+    return candidates
+
+
+def _count_matching(
+    peers: Sequence[PlaywrightControl],
+    predicate: Callable[[PlaywrightControl], bool],
+) -> int:
+    return sum(1 for peer in peers if predicate(peer))
+
+
+def _peer_unique_selectors(
+    control: PlaywrightControl, peers: Sequence[PlaywrightControl]
+) -> set[str]:
+    """Selectors that match exactly one control in the scanned metadata set."""
+    unique = {_nth_selector(control)}
+    if (
+        control.element_id
+        and _count_matching(peers, lambda p: p.element_id == control.element_id) == 1
+    ):
+        unique.add(_id_selector(control.element_id))
+    if (
+        control.input_type == "radio"
+        and control.name
+        and control.value is not None
+        and _count_matching(peers, lambda p: p.name == control.name and p.value == control.value)
+        == 1
+    ):
+        unique.add(_css_attr("name", control.name) + _css_attr("value", control.value))
+    elif control.name and _count_matching(peers, lambda p: p.name == control.name) == 1:
+        unique.add(_css_attr("name", control.name))
+    if (
+        control.aria_label
+        and _count_matching(peers, lambda p: p.aria_label == control.aria_label) == 1
+    ):
+        unique.add(_css_attr("aria-label", control.aria_label))
+    if (
+        control.placeholder
+        and _count_matching(peers, lambda p: p.placeholder == control.placeholder) == 1
+    ):
+        unique.add(_css_attr("placeholder", control.placeholder))
+    if (
+        control.data_attr
+        and control.data_value
+        and _count_matching(
+            peers,
+            lambda p: p.data_attr == control.data_attr and p.data_value == control.data_value,
+        )
+        == 1
+    ):
+        unique.add(_css_attr(control.data_attr, control.data_value))
+    return unique
+
+
+def build_playwright_locator(
+    control: PlaywrightControl,
+    *,
+    used: set[str],
+    unique_in_dom: set[str] | None = None,
+) -> str:
+    """Return a locator that matches one control, not merely a new string."""
+    for candidate in _locator_candidates(control):
+        if candidate in used:
+            continue
+        if unique_in_dom is not None and candidate not in unique_in_dom:
+            continue
+        return candidate
     return _nth_selector(control)
 
 
@@ -230,9 +296,11 @@ _CONTROL_METADATA_JS = """() => {
   const seen = new Set();
   const rows = [];
   document.querySelectorAll(selector).forEach((el) => {
-    if (el.offsetParent === null && el.tagName !== 'INPUT') return;
+    if (el.offsetParent === null) return;
     if (seen.has(el)) return;
     seen.add(el);
+    const dataTestid = el.getAttribute('data-testid');
+    const dataQa = el.getAttribute('data-qa');
     rows.push({
       tag: el.tagName.toLowerCase(),
       type: (el.getAttribute('type') || (el.tagName === 'INPUT' ? 'text' : null)),
@@ -243,7 +311,8 @@ _CONTROL_METADATA_JS = """() => {
       accessibleName: accessibleName(el),
       ariaLabel: (el.getAttribute('aria-label') || '').trim() || null,
       ariaRole: el.getAttribute('role'),
-      dataTestid: el.getAttribute('data-testid') || el.getAttribute('data-qa'),
+      dataAttr: dataTestid ? 'data-testid' : (dataQa ? 'data-qa' : null),
+      dataValue: dataTestid || dataQa,
       required: el.hasAttribute('required'),
       disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
       contenteditable: el.isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA',
@@ -298,11 +367,21 @@ def _optional_str(value: Any) -> str | None:
     return text or None
 
 
-def elements_from_metadata(rows: Sequence[Any]) -> list[PageElement]:
-    """Turn Playwright metadata rows into uniquely addressed page elements."""
-    used: set[str] = set()
+def _data_attr_from_row(row: dict[str, Any]) -> tuple[str | None, str | None]:
+    data_attr = _optional_str(row.get("dataAttr"))
+    data_value = _optional_str(row.get("dataValue"))
+    if data_value is None:
+        data_value = _optional_str(row.get("dataTestid"))
+        if data_value is not None and data_attr is None:
+            data_attr = "data-testid"
+    return data_attr, data_value
+
+
+def _staged_controls(
+    rows: Sequence[Any],
+) -> list[tuple[dict[str, Any], PlaywrightControl, ElementRole]]:
     group_counts: dict[str, int] = {}
-    elements: list[PageElement] = []
+    staged: list[tuple[dict[str, Any], PlaywrightControl, ElementRole]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -311,7 +390,8 @@ def elements_from_metadata(rows: Sequence[Any]) -> list[PageElement]:
         aria_role = _optional_str(row.get("ariaRole"))
         if aria_role:
             aria_role = aria_role.lower()
-        staged = PlaywrightControl(
+        data_attr, data_value = _data_attr_from_row(row)
+        staged_control = PlaywrightControl(
             tag=tag,
             input_type=input_type,
             element_id=_optional_str(row.get("id")),
@@ -319,34 +399,48 @@ def elements_from_metadata(rows: Sequence[Any]) -> list[PageElement]:
             value=None if row.get("value") is None else str(row.get("value")),
             aria_label=_optional_str(row.get("ariaLabel")),
             placeholder=_optional_str(row.get("placeholder")),
-            data_testid=_optional_str(row.get("dataTestid")),
+            data_attr=data_attr,
+            data_value=data_value,
             aria_role=aria_role,
         )
-        group = _nth_group(staged)
+        group = _nth_group(staged_control)
         index = group_counts.get(group, 0)
         group_counts[group] = index + 1
-        control = replace(staged, index_in_type=index)
-        locator = build_playwright_locator(control, used=used)
+        staged.append((row, replace(staged_control, index_in_type=index), role))
+    return staged
+
+
+def _page_element(
+    row: dict[str, Any], control: PlaywrightControl, locator: str, role: ElementRole
+) -> PageElement:
+    accessible = _optional_str(row.get("accessibleName")) or control.aria_label
+    options_raw = row.get("options") or []
+    options = [str(item) for item in options_raw if item] if isinstance(options_raw, list) else []
+    return PageElement(
+        locator=locator,
+        role=role,
+        label=accessible,
+        name=control.name,
+        value=control.value,
+        placeholder=control.placeholder,
+        required=bool(row.get("required")),
+        disabled=bool(row.get("disabled")),
+        options=options,
+        input_type=control.input_type,
+    )
+
+
+def elements_from_metadata(rows: Sequence[Any]) -> list[PageElement]:
+    """Turn Playwright metadata rows into uniquely addressed page elements."""
+    staged = _staged_controls(rows)
+    peers = [control for _, control, _role in staged]
+    used: set[str] = set()
+    elements: list[PageElement] = []
+    for row, control, role in staged:
+        unique = _peer_unique_selectors(control, peers)
+        locator = build_playwright_locator(control, used=used, unique_in_dom=unique)
         used.add(locator)
-        accessible = _optional_str(row.get("accessibleName")) or control.aria_label
-        options_raw = row.get("options") or []
-        options = (
-            [str(item) for item in options_raw if item] if isinstance(options_raw, list) else []
-        )
-        elements.append(
-            PageElement(
-                locator=locator,
-                role=role,
-                label=accessible,
-                name=control.name,
-                value=control.value,
-                placeholder=control.placeholder,
-                required=bool(row.get("required")),
-                disabled=bool(row.get("disabled")),
-                options=options,
-                input_type=input_type,
-            )
-        )
+        elements.append(_page_element(row, control, locator, role))
     return elements
 
 
@@ -600,6 +694,15 @@ class PlaywrightSession(BrowserSession):
         except Exception:
             log.warning("playwright.storage_state_not_saved", path=str(destination))
 
+    async def _locator_unique_in_page(self, control: PlaywrightControl, used: set[str]) -> str:
+        """Pick the first candidate that matches exactly one live node."""
+        for candidate in _locator_candidates(control):
+            if candidate in used:
+                continue
+            if await self._page.locator(candidate).count() == 1:
+                return candidate
+        return _nth_selector(control)
+
     async def _extract_controls(self) -> list[PageElement]:
         try:
             rows = await self._page.evaluate(_CONTROL_METADATA_JS)
@@ -608,7 +711,14 @@ class PlaywrightSession(BrowserSession):
             return []
         if not isinstance(rows, list):
             return []
-        return elements_from_metadata(rows)
+        staged = _staged_controls(rows)
+        used: set[str] = set()
+        elements: list[PageElement] = []
+        for row, control, role in staged:
+            locator = await self._locator_unique_in_page(control, used)
+            used.add(locator)
+            elements.append(_page_element(row, control, locator, role))
+        return elements
 
 
 class PlaywrightBackend(BrowserBackend):

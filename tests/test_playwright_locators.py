@@ -109,6 +109,50 @@ def test_duplicate_candidate_falls_back_to_nth() -> None:
     assert "nth=" in locator
 
 
+def test_duplicate_name_does_not_claim_ambiguous_selector() -> None:
+    elements = elements_from_metadata(
+        [
+            {"tag": "input", "type": "email", "name": "email"},
+            {"tag": "input", "type": "email", "name": "email"},
+        ]
+    )
+    locators = [element.locator for element in elements]
+    assert locators == [
+        "input[type='email'] >> visible=true >> nth=0",
+        "input[type='email'] >> visible=true >> nth=1",
+    ]
+
+
+def test_candidate_skipped_when_not_unique_in_dom() -> None:
+    locator = build_playwright_locator(
+        PlaywrightControl(tag="input", input_type="email", name="email", index_in_type=0),
+        used=set(),
+        unique_in_dom=set(),
+    )
+    assert locator == "input[type='email'] >> visible=true >> nth=0"
+
+
+def test_data_qa_emits_data_qa_selector() -> None:
+    elements = elements_from_metadata(
+        [{"tag": "input", "type": "email", "dataAttr": "data-qa", "dataValue": "work-email"}]
+    )
+    assert elements[0].locator == '[data-qa="work-email"]'
+
+
+def test_data_testid_emits_data_testid_selector() -> None:
+    elements = elements_from_metadata(
+        [
+            {
+                "tag": "input",
+                "type": "email",
+                "dataAttr": "data-testid",
+                "dataValue": "email-field",
+            }
+        ]
+    )
+    assert elements[0].locator == '[data-testid="email-field"]'
+
+
 def test_aria_label_attribute_is_a_locator_candidate() -> None:
     locator = build_playwright_locator(
         PlaywrightControl(
@@ -230,6 +274,12 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         locators = [element.locator for element in observation.elements]
         assert locators
         assert len(locators) == len(set(locators))
+        page = session._page
+        for element in observation.elements:
+            assert await page.locator(element.locator).count() == 1
+        assert all(element.name != "hidden_template" for element in observation.elements)
+        assert all(element.locator != '[name="email"]' for element in observation.elements)
+        assert any(element.locator == '[data-qa="work-email"]' for element in observation.elements)
 
         first = next(element for element in observation.elements if element.label == "First name")
         filled = await session.fill_field(first.locator, "Ada")

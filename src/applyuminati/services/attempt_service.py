@@ -41,6 +41,7 @@ __all__ = [
     "AttemptService",
     "HostPresence",
     "InboxItem",
+    "browser_target",
     "host_presence",
 ]
 
@@ -59,6 +60,24 @@ class HostPresence(StrEnum):
     NOT_REQUIRED = "not_required"
 
 
+def browser_target(
+    attempt: ApplicationAttempt,
+    intervention: HumanIntervention | None = None,
+) -> tuple[str | None, str | None]:
+    """Host and session id that presence, reclaim, and bind must all agree on.
+
+    An intervention records where the human was actually sent. Resolving it
+    differently in one path is how the inbox shows a host as connected while
+    reclaim stalls against another one.
+    """
+    if intervention is None:
+        return attempt.browser_host_id, attempt.browser_session_id
+    return (
+        intervention.browser_host_id or attempt.browser_host_id,
+        intervention.browser_session_id or attempt.browser_session_id,
+    )
+
+
 def host_presence(
     attempt: ApplicationAttempt,
     intervention: HumanIntervention,
@@ -67,13 +86,12 @@ def host_presence(
     """Reconcile the persisted host id with live Browser Host presence."""
     if not intervention.requires_browser_handoff:
         return HostPresence.NOT_REQUIRED
-    host_id = intervention.browser_host_id or attempt.browser_host_id
+    host_id, session_id = browser_target(attempt, intervention)
     if not host_id:
         return HostPresence.SESSION_UNAVAILABLE
     if manager is None or not manager.is_connected(host_id):
         return HostPresence.OFFLINE
     live = manager.connected(host_id)
-    session_id = intervention.browser_session_id or attempt.browser_session_id
     if live is not None and session_id and session_id not in live.open_sessions:
         return HostPresence.SESSION_UNAVAILABLE
     return HostPresence.CONNECTED
@@ -235,18 +253,18 @@ class AttemptService:
         """Take the browser back before a worker may act. Failure stays paused."""
         if not intervention.requires_browser_handoff:
             return True
-        unavailable = (
-            manager is None
-            or not attempt.browser_host_id
-            or not manager.is_connected(attempt.browser_host_id)
-        )
-        if unavailable:
+        host_id, session_id = browser_target(attempt, intervention)
+        if manager is None or not host_id or not manager.is_connected(host_id):
             attempt.record_event(
                 AttemptEventKind.INTERVENTION_RECLAIM_FAILED,
                 "Browser Host unavailable; intervention remains open",
             )
             return False
-        session = await self.bind_session(attempt, manager=manager)
+        # The resumed worker must act on the session the human just released,
+        # not on a stale one recorded when the attempt started.
+        attempt.browser_host_id = host_id
+        attempt.browser_session_id = session_id
+        session = await self.bind_session(attempt, manager=manager, intervention=intervention)
         detail: str | None = None
         if session is None:
             detail = "could not attach the host session to reclaim control"
@@ -278,18 +296,19 @@ class AttemptService:
         *,
         manager: BrowserHostManager | None = None,
         session_factory: SessionFactory | None = None,
+        intervention: HumanIntervention | None = None,
     ) -> BrowserSession | None:
         """Attach the attempt to a live host session, or a test factory."""
         if session_factory is not None:
             return await session_factory(attempt)
-        if manager is None or not attempt.browser_host_id:
+        host_id, session_id = browser_target(attempt, intervention)
+        if manager is None or not host_id:
             return None
-        if not manager.is_connected(attempt.browser_host_id):
+        if not manager.is_connected(host_id):
             return None
-        session_id = attempt.browser_session_id
         if not session_id:
             result = await manager.dispatch(
-                attempt.browser_host_id,
+                host_id,
                 HostCommand.CREATE_SESSION,
                 params={"backend": attempt.browser_backend} if attempt.browser_backend else {},
                 idempotency_key=f"create-session:{attempt.id}",
@@ -298,7 +317,7 @@ class AttemptService:
                 return None
             session_id = str(result.result["session_id"])
             attempt.browser_session_id = session_id
-        return HostedBrowserSession(manager, attempt.browser_host_id, session_id)
+        return HostedBrowserSession(manager, host_id, session_id)
 
     async def activate_browser(
         self,
@@ -332,7 +351,7 @@ class AttemptService:
                 "task_space_id": attempt.task_space_id,
                 "detail": "The browser session is not available on the host.",
             }
-        session = await self.bind_session(attempt, manager=manager)
+        session = await self.bind_session(attempt, manager=manager, intervention=reference)
         if session is None:
             return {
                 "ok": False,

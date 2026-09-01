@@ -129,9 +129,18 @@ async def run_attempt_worker_forever(
     container = get_container()
     while not stop.is_set():
         did_work = False
-        async with container.repositories() as repos:
-            worker = TaskWorker(TaskQueue(repos.tasks))
-            did_work = await worker.run_once(kinds=[APPLICATION_ATTEMPT_KIND])
+        try:
+            async with container.repositories() as repos:
+                worker = TaskWorker(TaskQueue(repos.tasks))
+                did_work = await worker.run_once(kinds=[APPLICATION_ATTEMPT_KIND])
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A handler or the database raising here would otherwise end the
+            # coroutine and leave PENDING attempts unclaimed for the rest of
+            # the process lifetime. Log it and wait one interval instead.
+            log.exception("attempt_worker.poll_failed")
+            did_work = False
         if not did_work:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=poll_interval)

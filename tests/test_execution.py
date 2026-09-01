@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from typing import Any, cast
+from unittest.mock import patch
 
 from applyuminati.applications.detect import detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcome, DriverOutcomeKind
-from applyuminati.browser.base import BrowserSession
+from applyuminati.browser.base import BrowserSession, ControlOwner
 from applyuminati.browser.host_manager import BrowserHostManager, LiveHost
 from applyuminati.browser.host_protocol import (
     BackendAdvertisement,
@@ -36,17 +37,19 @@ from applyuminati.db.repositories.attempts import AttemptRepository
 from applyuminati.db.repositories.jobs import JobRepository
 from applyuminati.db.repositories.tasks import TaskRepository
 from applyuminati.plugins.applications.greenhouse import GreenhouseDriver
-from applyuminati.services.attempt_service import AttemptService, host_presence
+from applyuminati.services.attempt_service import AttemptService, HostPresence, host_presence
 from applyuminati.services.attempt_tasks import (
     APPLICATION_ATTEMPT_KIND,
     ApplicationAttemptPayload,
     run_application_attempt,
+    run_attempt_worker_forever,
 )
 from applyuminati.services.container import Repositories
 from applyuminati.services.hosted_session import HostedBrowserSession
 from applyuminati.sources.normalize import build_job
 from applyuminati.tasks.handlers import TaskContext
 from applyuminati.tasks.queue import TaskQueue
+from applyuminati.tasks.worker import TaskWorker
 
 HOST_ID = "spencers-mac"
 
@@ -617,3 +620,104 @@ async def test_inbox_reports_live_host_presence(database) -> None:
         live_record = BrowserHostRecord(host_id="mac")
         manager._hosts["mac"] = LiveHost(record=live_record, connection=_Conn())
         assert host_presence(attempt, intervention, manager).value == "connected"
+
+
+async def test_reclaim_targets_the_host_the_intervention_recorded(database) -> None:
+    job = _job()
+    manager = BrowserHostManager()
+    live, connection = await _attach(manager)
+    live.open_sessions.add("s1")
+    pump = await _answer_host(manager, live, connection, reclaim_ok=True)
+    try:
+        async with database.session() as session:
+            await JobRepository(session).upsert(job)
+            repos = Repositories.bind(session)
+            service = AttemptService(repos)
+            attempt = await service.create(
+                application_id="app1",
+                job=job,
+                profile=None,
+                mode=ExecutionMode.FILL_NO_SUBMIT,
+                browser_host_id="retired-mac",
+            )
+            opened = attempt.open_intervention(
+                InterventionReason.AUTHENTICATION_REQUIRED, "Sign in"
+            )
+            opened.browser_host_id = HOST_ID
+            opened.browser_session_id = "s1"
+            await repos.attempts.save(attempt)
+            assert host_presence(attempt, opened, manager) is HostPresence.CONNECTED
+            resumed = await service.resolve(
+                attempt.id,
+                opened.id,
+                InterventionResolution.DONE_CONTINUE,
+                manager=manager,
+            )
+            assert resumed.workflow_state is WorkflowState.PENDING
+            assert resumed.browser_host_id == HOST_ID
+            assert resumed.browser_session_id == "s1"
+            commands = [
+                CommandMessage.model_validate_json(frame).command for frame in connection.sent
+            ]
+            assert HostCommand.RECLAIM_CONTROL in commands
+    finally:
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
+
+
+async def test_wait_for_control_polls_until_the_user_returns() -> None:
+    class _Owners:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def dispatch(self, *_args: Any, **_kwargs: Any) -> ResultMessage:
+            self.calls += 1
+            owner = "user" if self.calls < 3 else "agent"
+            return ResultMessage(command_id="c1", ok=True, result={"owner": owner})
+
+    owners = _Owners()
+    hosted = HostedBrowserSession(cast(Any, owners), HOST_ID, "s1")
+    with patch("applyuminati.services.hosted_session._CONTROL_POLL_SECONDS", 0.0):
+        granted = await hosted.wait_for_control(timeout_seconds=5.0)
+    assert granted.ok is True
+    assert owners.calls == 3
+
+
+async def test_wait_for_control_reports_a_timeout_without_seizing() -> None:
+    class _StillTheirs:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def dispatch(self, *_args: Any, **_kwargs: Any) -> ResultMessage:
+            self.calls += 1
+            return ResultMessage(command_id="c1", ok=True, result={"owner": "user"})
+
+    theirs = _StillTheirs()
+    hosted = HostedBrowserSession(cast(Any, theirs), HOST_ID, "s1")
+    with patch("applyuminati.services.hosted_session._CONTROL_POLL_SECONDS", 0.0):
+        refused = await hosted.wait_for_control(timeout_seconds=0.05)
+    assert refused.ok is False
+    assert theirs.calls >= 1
+    assert hosted.owner is not ControlOwner.AGENT
+
+
+async def test_worker_survives_a_crashing_poll(database, monkeypatch) -> None:
+    stop = asyncio.Event()
+    polls = 0
+
+    async def _run_once(self: Any, **_kwargs: Any) -> bool:
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            msg = "database went away"
+            raise RuntimeError(msg)
+        stop.set()
+        return False
+
+    monkeypatch.setattr(TaskWorker, "run_once", _run_once)
+    await asyncio.wait_for(
+        run_attempt_worker_forever(poll_interval=0.01, stop_event=stop),
+        timeout=5.0,
+    )
+    assert polls >= 2

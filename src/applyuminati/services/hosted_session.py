@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+from time import monotonic
 
 from applyuminati.browser.base import (
     ActionResult,
@@ -16,6 +18,11 @@ from applyuminati.browser.host_manager import BrowserHostManager, HostCommandErr
 from applyuminati.browser.host_protocol import HostCommand
 
 __all__ = ["HostedBrowserSession"]
+
+#: Gap between ownership polls while waiting for a human to hand control back.
+#: The host pushes a control_changed event too, but a poll is what a caller
+#: holding a deadline can rely on.
+_CONTROL_POLL_SECONDS = 2.0
 
 
 class HostedBrowserSession:
@@ -104,8 +111,24 @@ class HostedBrowserSession:
         return self._owner
 
     async def wait_for_control(self, *, timeout_seconds: float) -> ActionResult:
-        owner = await self.control_state()
-        return ActionResult(ok=owner is ControlOwner.AGENT, action="wait")
+        """Poll ownership until the user hands the session back or time runs out.
+
+        A timeout is a report, never a licence: ``ok=False`` means the person is
+        still working, and the caller must leave the attempt waiting.
+        """
+        deadline = monotonic() + timeout_seconds
+        while True:
+            owner = await self.control_state()
+            if owner is ControlOwner.AGENT:
+                return ActionResult(ok=True, action="wait")
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return ActionResult(
+                    ok=False,
+                    action="wait",
+                    detail=f"user still holds the session after {timeout_seconds:.0f}s",
+                )
+            await asyncio.sleep(min(_CONTROL_POLL_SECONDS, remaining))
 
     async def reclaim_control(self, *, confirmed_by_user: bool) -> ActionResult:
         payload = await self._ok(

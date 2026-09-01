@@ -306,35 +306,58 @@ class AttemptService:
             return None
         if not manager.is_connected(host_id):
             return None
-        if not session_id:
-            params: dict[str, Any] = {
-                # Durable execution identity, so the host opens the workspace
-                # this attempt has to re-enter rather than inventing a name.
-                "session_id": attempt.id,
-                "task_space": attempt.task_space_id,
-            }
-            if attempt.browser_backend:
-                params["backend"] = attempt.browser_backend
-            result = await manager.dispatch(
-                host_id,
-                HostCommand.CREATE_SESSION,
-                params=params,
-                idempotency_key=f"create-session:{attempt.id}",
-            )
-            if not result.ok or not result.result.get("session_id"):
-                return None
-            session_id = str(result.result["session_id"])
-            await self._adopt_created_session(
-                attempt,
-                intervention,
+        live = manager.connected(host_id)
+        if session_id and live is not None and session_id not in live.open_sessions:
+            # The host process restarted, so its session table is empty while
+            # the Ego task space is still on disk. A Browser Host session is
+            # ephemeral; the workspace is the durable thing. Rebuild the former
+            # around the latter rather than driving a session the host lost.
+            log.info(
+                "attempt.session_reconstructing",
+                attempt_id=attempt.id,
                 host_id=host_id,
                 session_id=session_id,
-                task_space_id=result.result.get("task_space_id"),
+                task_space_id=attempt.task_space_id,
             )
+        elif session_id:
+            return HostedBrowserSession(
+                manager,
+                host_id,
+                session_id,
+                task_space_id=attempt.task_space_id,
+            )
+        requested = session_id or attempt.id
+        params: dict[str, Any] = {
+            # Durable execution identity, so the host opens the workspace this
+            # attempt has to re-enter rather than inventing a name.
+            "session_id": requested,
+            "task_space": attempt.task_space_id,
+        }
+        if attempt.browser_backend:
+            params["backend"] = attempt.browser_backend
+        result = await manager.dispatch(
+            host_id,
+            HostCommand.CREATE_SESSION,
+            params=params,
+            # Keyed on the requested identity so retries of one logical open
+            # deduplicate, while a rebuild after a host restart is not answered
+            # from a memoised result naming the session that host already lost.
+            idempotency_key=f"create-session:{requested}",
+        )
+        if not result.ok or not result.result.get("session_id"):
+            return None
+        opened = str(result.result["session_id"])
+        await self._adopt_created_session(
+            attempt,
+            intervention,
+            host_id=host_id,
+            session_id=opened,
+            task_space_id=result.result.get("task_space_id"),
+        )
         return HostedBrowserSession(
             manager,
             host_id,
-            session_id,
+            opened,
             task_space_id=attempt.task_space_id,
         )
 

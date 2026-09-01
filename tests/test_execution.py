@@ -7,11 +7,13 @@ import contextlib
 from typing import Any, cast
 from unittest.mock import patch
 
+import pytest
+
 from applyuminati.applications.detect import detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcome, DriverOutcomeKind
 from applyuminati.applications.runner import agent_still_owns
 from applyuminati.browser.base import BrowserSession, ControlOwner
-from applyuminati.browser.host_manager import BrowserHostManager, LiveHost
+from applyuminati.browser.host_manager import BrowserHostManager, HostCommandError, LiveHost
 from applyuminati.browser.host_protocol import (
     BackendAdvertisement,
     CommandMessage,
@@ -755,6 +757,136 @@ async def test_open_browser_persists_the_session_it_hands_to_the_human(database)
         pump.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await pump
+
+
+async def test_a_host_process_restart_rebuilds_the_session_from_the_task_space(
+    database,
+) -> None:
+    """Restarting the companion is routine recovery, not a stranded attempt.
+
+    A Browser Host session is ephemeral and lives in the host process. The Ego
+    task space is durable. After a restart the host advertises no resumable
+    sessions, so the persisted session id names something that no longer exists
+    and every command would come back UNKNOWN_SESSION.
+    """
+    job = _job()
+    manager = BrowserHostManager()
+    live, connection = await _attach(manager)
+    created: list[CommandMessage] = []
+    pump = await _answer_host(manager, live, connection, reclaim_ok=True, created_sessions=created)
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1",
+            job=job,
+            profile=None,
+            mode=ExecutionMode.FILL_NO_SUBMIT,
+            browser_host_id=HOST_ID,
+        )
+        attempt.open_intervention(InterventionReason.AUTHENTICATION_REQUIRED, "Sign in")
+        await repos.attempts.save(attempt)
+        first = await service.bind_session(attempt, manager=manager)
+        assert first is not None
+        assert first.session_id == "host-session-1"
+    pump.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await pump
+    task_space = f"applyuminati:{attempt.id}"
+
+    # The companion process restarts: a fresh connection with an empty session
+    # table, while the Ego workspace is still there.
+    await manager.detach(HOST_ID, reason="host restarted")
+    restarted, restarted_connection = await _attach(manager)
+    assert restarted.open_sessions == set()
+    rebuilt: list[CommandMessage] = []
+    pump = await _answer_host(
+        manager, restarted, restarted_connection, reclaim_ok=True, created_sessions=rebuilt
+    )
+    try:
+        async with database.session() as fresh:
+            reloaded = await AttemptRepository(fresh).get(attempt.id)
+        assert reloaded is not None
+        assert reloaded.browser_session_id == "host-session-1"
+        pending = reloaded.pending_intervention
+        assert pending is not None
+        assert host_presence(reloaded, pending, manager) is HostPresence.SESSION_UNAVAILABLE
+
+        async with database.session() as session:
+            repos = Repositories.bind(session)
+            service = AttemptService(repos)
+            resumed = await service.resolve(
+                reloaded.id,
+                pending.id,
+                InterventionResolution.DONE_CONTINUE,
+                manager=manager,
+            )
+            assert resumed.workflow_state is WorkflowState.PENDING
+        assert len(rebuilt) == 1
+        # Rebuilt around the persisted identity, in the same Ego workspace.
+        assert rebuilt[0].params["session_id"] == "host-session-1"
+        assert rebuilt[0].params["task_space"] == task_space
+
+        async with database.session() as after:
+            settled = await AttemptRepository(after).get(attempt.id)
+        assert settled is not None
+        assert settled.task_space_id == task_space
+        assert settled.browser_session_id == "host-session-1"
+        reclaims = [
+            CommandMessage.model_validate_json(frame)
+            for frame in restarted_connection.sent
+            if CommandMessage.model_validate_json(frame).command is HostCommand.RECLAIM_CONTROL
+        ]
+        assert [frame.session_id for frame in reclaims] == ["host-session-1"]
+    finally:
+        pump.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await pump
+
+
+async def test_a_refused_handoff_does_not_claim_the_user_has_control() -> None:
+    class _Refuses:
+        async def dispatch(self, *_args: Any, **_kwargs: Any) -> ResultMessage:
+            return ResultMessage(
+                command_id="c1",
+                ok=False,
+                error_code=HostErrorCode.BACKEND_UNAVAILABLE,
+                error_message="ego lite is not running",
+            )
+
+    hosted = HostedBrowserSession(cast(Any, _Refuses()), HOST_ID, "s1")
+    refused = await hosted.request_human_control("Sign in")
+    assert refused.ok is False
+    assert hosted.owner is ControlOwner.AGENT
+
+
+async def test_a_refused_observation_reports_the_host_reason_not_a_schema_error() -> None:
+    """A structured reply cannot be faked from a refusal.
+
+    Validating a stub payload would raise a missing-field error and bury the
+    reason the host gave, which is the one thing the workflow needs.
+    """
+
+    class _Refuses:
+        async def dispatch(self, *_args: Any, **_kwargs: Any) -> ResultMessage:
+            return ResultMessage(
+                command_id="c1",
+                ok=False,
+                error_code=HostErrorCode.USER_HAS_CONTROL,
+                error_message="the user currently owns this session",
+            )
+
+    hosted = HostedBrowserSession(cast(Any, _Refuses()), HOST_ID, "s1")
+    with pytest.raises(HostCommandError) as raised:
+        await hosted.observe()
+    assert raised.value.error_code is HostErrorCode.USER_HAS_CONTROL
+    assert "owns this session" in raised.value.message
+    # Action-style commands still answer rather than raise.
+    refused = await hosted.fill_field("name", "Jane")
+    assert refused.ok is False
+    assert refused.detail is not None
+    assert "owns this session" in refused.detail
 
 
 async def test_control_state_fails_closed_when_the_host_errors() -> None:

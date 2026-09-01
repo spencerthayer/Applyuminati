@@ -15,7 +15,7 @@ from applyuminati.browser.base import (
     PageObservation,
 )
 from applyuminati.browser.host_manager import BrowserHostManager, HostCommandError
-from applyuminati.browser.host_protocol import HostCommand
+from applyuminati.browser.host_protocol import HostCommand, HostErrorCode
 
 __all__ = ["HostedBrowserSession"]
 
@@ -52,14 +52,14 @@ class HostedBrowserSession:
         return self._task_space_id
 
     async def navigate(self, url: str, *, wait_for_load: bool = True) -> PageObservation:
-        payload = await self._ok(
+        payload = await self._send(
             HostCommand.NAVIGATE,
             {"url": url, "wait_for_load": wait_for_load},
         )
         return PageObservation.model_validate(payload)
 
     async def observe(self, *, include_text: bool = True) -> PageObservation:
-        payload = await self._ok(HostCommand.OBSERVE, {"include_text": include_text})
+        payload = await self._send(HostCommand.OBSERVE, {"include_text": include_text})
         return PageObservation.model_validate(payload)
 
     async def find_controls(self, *, role: ElementRole | None = None) -> list[PageElement]:
@@ -69,20 +69,16 @@ class HostedBrowserSession:
         return [element for element in observation.elements if element.role is role]
 
     async def fill_field(self, locator: str, value: str) -> ActionResult:
-        payload = await self._ok(HostCommand.FILL, {"locator": locator, "value": value})
-        return ActionResult.model_validate(payload)
+        return await self._action(HostCommand.FILL, {"locator": locator, "value": value})
 
     async def select_option(self, locator: str, option: str) -> ActionResult:
-        payload = await self._ok(HostCommand.SELECT, {"locator": locator, "option": option})
-        return ActionResult.model_validate(payload)
+        return await self._action(HostCommand.SELECT, {"locator": locator, "option": option})
 
     async def set_checked(self, locator: str, checked: bool) -> ActionResult:
-        payload = await self._ok(HostCommand.SET_CHECKED, {"locator": locator, "checked": checked})
-        return ActionResult.model_validate(payload)
+        return await self._action(HostCommand.SET_CHECKED, {"locator": locator, "checked": checked})
 
     async def upload_file(self, locator: str, path: Path) -> ActionResult:
-        payload = await self._ok(HostCommand.UPLOAD, {"locator": locator, "path": str(path)})
-        return ActionResult.model_validate(payload)
+        return await self._action(HostCommand.UPLOAD, {"locator": locator, "path": str(path)})
 
     async def click(
         self,
@@ -91,32 +87,31 @@ class HostedBrowserSession:
         label: str | None = None,
         idempotency_key: str | None = None,
     ) -> ActionResult:
-        payload = await self._ok(
+        return await self._action(
             HostCommand.CLICK,
             {"locator": locator, "label": label},
             idempotency_key=idempotency_key,
         )
-        return ActionResult.model_validate(payload)
 
     async def wait_for_navigation(self, *, timeout_seconds: float | None = None) -> ActionResult:
-        payload = await self._ok(
+        return await self._action(
             HostCommand.WAIT_FOR_NAVIGATION,
             {"timeout_seconds": timeout_seconds},
         )
-        return ActionResult.model_validate(payload)
 
     async def screenshot(self, *, relative_path: str) -> str:
-        payload = await self._ok(HostCommand.SCREENSHOT, {"relative_path": relative_path})
+        payload = await self._send(HostCommand.SCREENSHOT, {"relative_path": relative_path})
         return str(payload.get("path", relative_path))
 
     async def checkpoint(self) -> BrowserCheckpoint:
-        payload = await self._ok(HostCommand.CHECKPOINT, {})
+        payload = await self._send(HostCommand.CHECKPOINT, {})
         return BrowserCheckpoint.model_validate(payload)
 
     async def request_human_control(self, instruction: str) -> ActionResult:
-        payload = await self._ok(HostCommand.REQUEST_HANDOFF, {"instruction": instruction})
-        self._owner = ControlOwner.DELEGATED_TO_USER
-        return ActionResult.model_validate(payload)
+        result = await self._action(HostCommand.REQUEST_HANDOFF, {"instruction": instruction})
+        if result.ok:
+            self._owner = ControlOwner.DELEGATED_TO_USER
+        return result
 
     async def control_state(self) -> ControlOwner:
         """Ask the host who owns the session. Fails closed.
@@ -124,10 +119,13 @@ class HostedBrowserSession:
         An unanswered ownership question is not permission to drive, so a failed
         or malformed reply reports ``USER`` rather than defaulting to ``AGENT``.
         """
-        payload = await self._ok(HostCommand.CONTROL_STATE, {})
-        raw = payload.get("owner")
         try:
-            self._owner = ControlOwner(str(raw))
+            payload = await self._send(HostCommand.CONTROL_STATE, {})
+        except HostCommandError:
+            self._owner = ControlOwner.USER
+            return self._owner
+        try:
+            self._owner = ControlOwner(str(payload.get("owner")))
         except ValueError:
             self._owner = ControlOwner.USER
         return self._owner
@@ -153,40 +151,62 @@ class HostedBrowserSession:
             await asyncio.sleep(min(_CONTROL_POLL_SECONDS, remaining))
 
     async def reclaim_control(self, *, confirmed_by_user: bool) -> ActionResult:
-        payload = await self._ok(
+        result = await self._action(
             HostCommand.RECLAIM_CONTROL,
             {"confirmed_by_user": confirmed_by_user},
         )
-        result = ActionResult.model_validate(payload)
         if result.ok:
             self._owner = ControlOwner.AGENT
         return result
 
     async def close(self) -> None:
-        await self._ok(HostCommand.CLOSE_SESSION, {})
+        await self._action(HostCommand.CLOSE_SESSION, {})
 
-    async def _ok(
+    async def _send(
         self,
         command: HostCommand,
         params: dict[str, object],
         *,
         idempotency_key: str | None = None,
     ) -> dict[str, object]:
-        try:
-            result = await self._manager.dispatch(
-                self._host_id,
-                command,
-                session_id=self.session_id,
-                params=params,
-                idempotency_key=idempotency_key,
-            )
-        except HostCommandError as exc:
-            return {"ok": False, "action": command.value, "detail": exc.message}
+        """Dispatch one command, raising when the host did not carry it out.
+
+        Callers needing a structured reply (an observation, a checkpoint) cannot
+        be handed a stub: validating a placeholder would surface a host refusal
+        as an opaque schema error and lose the reason the host gave.
+        """
+        result = await self._manager.dispatch(
+            self._host_id,
+            command,
+            session_id=self.session_id,
+            params=params,
+            idempotency_key=idempotency_key,
+        )
         if not result.ok:
-            return {
-                "ok": False,
-                "action": command.value,
-                "detail": result.error_message or result.error_code,
-            }
+            raise HostCommandError(
+                result.error_message or "the browser host refused this command",
+                code=result.error_code or HostErrorCode.INTERNAL,
+                host_id=self._host_id,
+                command=command,
+            )
         payload = result.result
         return payload if isinstance(payload, dict) else {}
+
+    async def _action(
+        self,
+        command: HostCommand,
+        params: dict[str, object],
+        *,
+        idempotency_key: str | None = None,
+    ) -> ActionResult:
+        """Dispatch one command whose failure is an answer rather than an error.
+
+        A login wall or a user-held session is a result the workflow reads, so
+        these come back as ``ok=False`` with the host's detail attached.
+        """
+        try:
+            payload = await self._send(command, params, idempotency_key=idempotency_key)
+        except HostCommandError as exc:
+            return ActionResult(ok=False, action=command.value, detail=exc.message)
+        # The host reports its own ok and action; these only fill a bare reply.
+        return ActionResult.model_validate({"ok": True, "action": command.value, **payload})

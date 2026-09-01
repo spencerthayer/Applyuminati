@@ -7,7 +7,10 @@ message when the import fails or browsers are not downloaded.
 
 from __future__ import annotations
 
+import re
 import time
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -29,10 +32,24 @@ from applyuminati.core.ids import new_ulid
 from applyuminati.core.logging import get_logger
 from applyuminati.core.registry import HealthReport, HealthState, PluginMaturity
 from applyuminati.core.settings import Settings
+from applyuminati.plugins.browsers.shared import (
+    MAX_TEXT_CHARS,
+    detect_condition,
+    questions_from_elements,
+)
 
 log = get_logger(__name__)
 
-__all__ = ["PLUGIN", "PlaywrightBackend", "PlaywrightSession"]
+__all__ = [
+    "PLUGIN",
+    "PlaywrightBackend",
+    "PlaywrightControl",
+    "PlaywrightSession",
+    "build_playwright_locator",
+    "checkbox_checked_from_answer",
+    "elements_from_metadata",
+    "radio_answer_matches",
+]
 
 #: What this backend can do regardless of configuration.
 #:
@@ -76,6 +93,480 @@ def _metadata(settings: Settings | None = None) -> BrowserMetadata:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class PlaywrightControl:
+    """Attributes Playwright uses to build a backend-owned locator string."""
+
+    tag: str
+    input_type: str | None = None
+    element_id: str | None = None
+    name: str | None = None
+    value: str | None = None
+    aria_label: str | None = None
+    placeholder: str | None = None
+    data_attr: str | None = None
+    data_value: str | None = None
+    aria_role: str | None = None
+    index_in_type: int = 0
+
+
+_CSS_ID_RE = re.compile(r"^[A-Za-z_][\w-]*$")
+_NATIVE_NTH_TAGS = frozenset({"input", "textarea", "select", "button", "a"})
+#: Must match the ``[role=...]`` entries in ``_CONTROL_METADATA_JS``.
+_SCANNED_ROLES = frozenset(
+    {"combobox", "textbox", "searchbox", "checkbox", "radio", "button", "link"}
+)
+
+
+def _css_attr(name: str, value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'[{name}="{escaped}"]'
+
+
+def _nth_group(control: PlaywrightControl) -> str:
+    if control.aria_role and control.aria_role in _SCANNED_ROLES:
+        group = f"role:{control.aria_role}"
+    elif control.aria_role:
+        group = f"{control.tag}[role={control.aria_role}]"
+    elif control.input_type == "contenteditable":
+        group = "contenteditable"
+    elif control.tag == "input":
+        group = f"input:{control.input_type}" if control.input_type else "input:not([type])"
+    elif control.tag == "a":
+        group = "a[href]"
+    else:
+        group = control.tag
+    return group
+
+
+def _nth_selector(control: PlaywrightControl) -> str:
+    """Selector whose nth index is counted only among matching visible nodes."""
+    n = control.index_in_type
+    if control.aria_role and control.aria_role in _SCANNED_ROLES:
+        escaped = control.aria_role.replace("'", "\\'")
+        base = f"[role='{escaped}']"
+    elif control.aria_role:
+        escaped = control.aria_role.replace("'", "\\'")
+        base = f"{control.tag}[role='{escaped}']"
+    elif control.input_type == "contenteditable":
+        base = ":is([contenteditable='true'], [contenteditable='']):not([role])"
+    elif control.tag == "input" and control.input_type:
+        escaped = control.input_type.replace("'", "\\'")
+        base = f"input[type='{escaped}']:not([role])"
+    elif control.tag == "input":
+        base = "input:not([type]):not([role])"
+    elif control.tag == "a":
+        base = "a[href]:not([role])"
+    elif control.tag in _NATIVE_NTH_TAGS:
+        base = f"{control.tag}:not([role])"
+    else:
+        base = f"{control.tag}:not([role])"
+    return f"{base} >> visible=true >> nth={n}"
+
+
+def _id_selector(element_id: str) -> str:
+    if _CSS_ID_RE.match(element_id):
+        return f"#{element_id}"
+    return _css_attr("id", element_id)
+
+
+def _locator_candidates(control: PlaywrightControl) -> list[str]:
+    """Attribute selectors that may address this control. nth is separate."""
+    candidates: list[str] = []
+    if control.element_id:
+        candidates.append(_id_selector(control.element_id))
+    if control.input_type == "radio" and control.name and control.value is not None:
+        candidates.append(_css_attr("name", control.name) + _css_attr("value", control.value))
+    elif control.name:
+        candidates.append(_css_attr("name", control.name))
+    if control.aria_label:
+        candidates.append(_css_attr("aria-label", control.aria_label))
+    if control.placeholder:
+        candidates.append(_css_attr("placeholder", control.placeholder))
+    if control.data_attr and control.data_value:
+        candidates.append(_css_attr(control.data_attr, control.data_value))
+    return candidates
+
+
+def _count_matching(
+    peers: Sequence[PlaywrightControl],
+    predicate: Callable[[PlaywrightControl], bool],
+) -> int:
+    return sum(1 for peer in peers if predicate(peer))
+
+
+def _flag_or_peer_unique(row: dict[str, Any], key: str, peer_count: int) -> bool:
+    if key in row:
+        return bool(row[key])
+    return peer_count == 1
+
+
+def _unique_selectors(
+    control: PlaywrightControl,
+    peers: Sequence[PlaywrightControl],
+    row: dict[str, Any],
+) -> set[str]:
+    """Selectors that match exactly one node in the live DOM or scanned peers."""
+    unique = {_nth_selector(control)}
+    if control.element_id and _flag_or_peer_unique(
+        row,
+        "uniqueId",
+        _count_matching(peers, lambda p: p.element_id == control.element_id),
+    ):
+        unique.add(_id_selector(control.element_id))
+    if control.input_type == "radio" and control.name and control.value is not None:
+        if _flag_or_peer_unique(
+            row,
+            "uniqueNameValue",
+            _count_matching(peers, lambda p: p.name == control.name and p.value == control.value),
+        ):
+            unique.add(_css_attr("name", control.name) + _css_attr("value", control.value))
+    elif control.name and _flag_or_peer_unique(
+        row, "uniqueName", _count_matching(peers, lambda p: p.name == control.name)
+    ):
+        unique.add(_css_attr("name", control.name))
+    if control.aria_label and _flag_or_peer_unique(
+        row, "uniqueAriaLabel", _count_matching(peers, lambda p: p.aria_label == control.aria_label)
+    ):
+        unique.add(_css_attr("aria-label", control.aria_label))
+    if control.placeholder and _flag_or_peer_unique(
+        row,
+        "uniquePlaceholder",
+        _count_matching(peers, lambda p: p.placeholder == control.placeholder),
+    ):
+        unique.add(_css_attr("placeholder", control.placeholder))
+    if (
+        control.data_attr
+        and control.data_value
+        and _flag_or_peer_unique(
+            row,
+            "uniqueData",
+            _count_matching(
+                peers,
+                lambda p: p.data_attr == control.data_attr and p.data_value == control.data_value,
+            ),
+        )
+    ):
+        unique.add(_css_attr(control.data_attr, control.data_value))
+    return unique
+
+
+def build_playwright_locator(
+    control: PlaywrightControl,
+    *,
+    used: set[str],
+    unique_in_dom: set[str] | None = None,
+) -> str:
+    """Return a locator that matches one control, not merely a new string."""
+    for candidate in _locator_candidates(control):
+        if candidate in used:
+            continue
+        if unique_in_dom is not None and candidate not in unique_in_dom:
+            continue
+        return candidate
+    return _nth_selector(control)
+
+
+_CHECKBOX_TRUE = frozenset({"yes", "true", "y", "1", "on"})
+_CHECKBOX_FALSE = frozenset({"no", "false", "n", "0", "off"})
+
+
+def checkbox_checked_from_answer(answer: str) -> bool | None:
+    """True/False for a yes/no checkbox answer, or None if the value is unknown."""
+    folded = answer.strip().casefold()
+    if folded in _CHECKBOX_TRUE:
+        return True
+    if folded in _CHECKBOX_FALSE:
+        return False
+    return None
+
+
+def radio_answer_matches(
+    *, option_value: str | None, option_label: str | None, answer: str
+) -> bool:
+    """True when ``answer`` is this radio's value or accessible name."""
+    needle = answer.strip().casefold()
+    if not needle:
+        return False
+    if option_value and option_value.strip().casefold() == needle:
+        return True
+    return bool(option_label and option_label.strip().casefold() == needle)
+
+
+#: Playwright-only metadata scrape. Locator strings are built in Python.
+#: Role selectors here must stay in sync with every role `_nth_group` buckets.
+_CONTROL_METADATA_JS = """() => {
+  const selector = [
+    'input:not([type="hidden"])',
+    'textarea',
+    'select',
+    'button',
+    'a[href]',
+    '[contenteditable="true"]',
+    '[contenteditable=""]',
+    '[role="combobox"]',
+    '[role="textbox"]',
+    '[role="searchbox"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="button"]',
+    '[role="link"]'
+  ].join(', ');
+  function accessibleName(el) {
+    const aria = (el.getAttribute('aria-label') || '').trim();
+    if (aria) return aria;
+    if (el.id) {
+      const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+      if (lab) return (lab.innerText || '').trim();
+    }
+    const wrap = el.closest('label');
+    if (wrap) {
+      const clone = wrap.cloneNode(true);
+      clone.querySelectorAll('input, textarea, select, button').forEach((n) => n.remove());
+      return (clone.innerText || '').trim();
+    }
+    if (el.tagName === 'BUTTON' || el.tagName === 'A' || el.getAttribute('role') === 'button') {
+      return (el.innerText || el.textContent || '').trim() || null;
+    }
+    return null;
+  }
+  function optionsFor(el) {
+    if (el.tagName !== 'SELECT') return [];
+    return Array.from(el.options).map((o) => (o.text || '').trim()).filter(Boolean);
+  }
+  function cssAttr(name, value) {
+    const escaped = String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+    return '[' + name + '="' + escaped + '"]';
+  }
+  function uniqueCss(sel) {
+    try { return document.querySelectorAll(sel).length === 1; } catch (e) { return false; }
+  }
+  function idSelector(id) {
+    return /^[A-Za-z_][\\w-]*$/.test(id) ? ('#' + id) : cssAttr('id', id);
+  }
+  const seen = new Set();
+  const rows = [];
+  document.querySelectorAll(selector).forEach((el) => {
+    const style = getComputedStyle(el);
+    const rect = el.getBoundingClientRect();
+    if (style.visibility === 'hidden' || style.visibility === 'collapse') return;
+    if (rect.width === 0 || rect.height === 0) return;
+    if (seen.has(el)) return;
+    seen.add(el);
+    const dataTestid = el.getAttribute('data-testid');
+    const dataQa = el.getAttribute('data-qa');
+    const dataAttr = dataTestid ? 'data-testid' : (dataQa ? 'data-qa' : null);
+    const dataValue = dataTestid || dataQa;
+    const id = el.id || null;
+    const name = el.getAttribute('name');
+    const value = el.getAttribute('value');
+    const type = el.getAttribute('type');
+    const ariaLabel = (el.getAttribute('aria-label') || '').trim() || null;
+    const placeholder = el.getAttribute('placeholder');
+    const idSel = id ? idSelector(id) : null;
+    rows.push({
+      tag: el.tagName.toLowerCase(),
+      type: type,
+      id: id,
+      name: name,
+      value: value,
+      placeholder: placeholder,
+      accessibleName: accessibleName(el),
+      ariaLabel: ariaLabel,
+      ariaRole: el.getAttribute('role'),
+      dataAttr: dataAttr,
+      dataValue: dataValue,
+      uniqueId: idSel ? uniqueCss(idSel) : false,
+      uniqueName: name ? uniqueCss(cssAttr('name', name)) : false,
+      uniqueNameValue: (String(type).toLowerCase() === 'radio' && name && value != null)
+        ? uniqueCss(cssAttr('name', name) + cssAttr('value', value)) : false,
+      uniqueAriaLabel: ariaLabel ? uniqueCss(cssAttr('aria-label', ariaLabel)) : false,
+      uniquePlaceholder: placeholder ? uniqueCss(cssAttr('placeholder', placeholder)) : false,
+      uniqueData: (dataAttr && dataValue) ? uniqueCss(cssAttr(dataAttr, dataValue)) : false,
+      required: el.hasAttribute('required'),
+      disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
+      contenteditable: el.isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA',
+      options: optionsFor(el),
+      formScope: el.form ? ('form:' + Array.from(document.forms).indexOf(el.form)) : 'document'
+    });
+  });
+  return rows;
+}"""
+
+
+_BUTTON_INPUT_TYPES = frozenset({"submit", "button", "reset", "image"})
+
+
+def _classify_toggle(
+    input_type: str | None, aria_role: str | None
+) -> tuple[ElementRole, str | None] | None:
+    if input_type == "checkbox":
+        return ElementRole.CHECKBOX, input_type
+    if aria_role == "checkbox":
+        return ElementRole.CHECKBOX, "aria-checkbox"
+    if input_type == "radio":
+        return ElementRole.RADIO, input_type
+    if aria_role == "radio":
+        return ElementRole.RADIO, "aria-radio"
+    return None
+
+
+def _classify_remaining(
+    tag: str, input_type: str | None, aria_role: str | None
+) -> tuple[ElementRole, str | None]:
+    toggle = _classify_toggle(input_type, aria_role)
+    if toggle is not None:
+        return toggle
+    role = ElementRole.TEXTBOX
+    if aria_role == "combobox":
+        input_type = input_type or "combobox"
+    elif aria_role == "searchbox":
+        input_type = "search"
+    elif aria_role == "button":
+        role = ElementRole.BUTTON
+    else:
+        input_type = input_type or ("text" if tag == "input" else None)
+    return role, input_type
+
+
+def _classify_control(row: dict[str, Any]) -> tuple[ElementRole, str | None]:
+    tag = str(row.get("tag") or "")
+    raw_type = row.get("type")
+    input_type = str(raw_type).lower() if raw_type else None
+    aria_role = (str(row.get("ariaRole") or "")).lower() or None
+    role = ElementRole.TEXTBOX
+    if row.get("contenteditable"):
+        return ElementRole.TEXTBOX, "contenteditable"
+    if aria_role == "searchbox":
+        input_type = "search"
+    if tag == "select":
+        role = ElementRole.SELECT
+    elif aria_role == "combobox" and tag not in {"input", "textarea"}:
+        role = ElementRole.SELECT
+        input_type = "combobox"
+    elif tag == "textarea":
+        role = ElementRole.TEXTAREA
+    elif tag == "button" or input_type in _BUTTON_INPUT_TYPES:
+        role = ElementRole.BUTTON
+    elif tag == "a" or aria_role == "link":
+        role = ElementRole.LINK
+    elif input_type == "file":
+        role = ElementRole.FILE_INPUT
+        input_type = "file"
+    else:
+        return _classify_remaining(tag, input_type, aria_role)
+    return role, input_type
+
+
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
+def _data_attr_from_row(row: dict[str, Any]) -> tuple[str | None, str | None]:
+    data_attr = _optional_str(row.get("dataAttr"))
+    data_value = _optional_str(row.get("dataValue"))
+    if data_value is None:
+        data_value = _optional_str(row.get("dataTestid"))
+        if data_value is not None and data_attr is None:
+            data_attr = "data-testid"
+    return data_attr, data_value
+
+
+def _staged_controls(
+    rows: Sequence[Any],
+) -> list[tuple[dict[str, Any], PlaywrightControl, ElementRole]]:
+    group_counts: dict[str, int] = {}
+    staged: list[tuple[dict[str, Any], PlaywrightControl, ElementRole]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        role, classified_type = _classify_control(row)
+        tag = str(row.get("tag") or "")
+        aria_role = _optional_str(row.get("ariaRole"))
+        if aria_role:
+            aria_role = aria_role.lower()
+        data_attr, data_value = _data_attr_from_row(row)
+        locator_type = classified_type
+        if tag == "input" and classified_type != "contenteditable":
+            raw_type = _optional_str(row.get("type"))
+            locator_type = raw_type.lower() if raw_type else None
+        staged_control = PlaywrightControl(
+            tag=tag,
+            input_type=locator_type,
+            element_id=_optional_str(row.get("id")),
+            name=_optional_str(row.get("name")),
+            value=None if row.get("value") is None else str(row.get("value")),
+            aria_label=_optional_str(row.get("ariaLabel")),
+            placeholder=_optional_str(row.get("placeholder")),
+            data_attr=data_attr,
+            data_value=data_value,
+            aria_role=aria_role,
+        )
+        group = _nth_group(staged_control)
+        index = group_counts.get(group, 0)
+        group_counts[group] = index + 1
+        staged.append((row, replace(staged_control, index_in_type=index), role))
+    return staged
+
+
+def _page_element(
+    row: dict[str, Any], control: PlaywrightControl, locator: str, role: ElementRole
+) -> PageElement:
+    accessible = _optional_str(row.get("accessibleName")) or control.aria_label
+    options_raw = row.get("options") or []
+    options = [str(item) for item in options_raw if item] if isinstance(options_raw, list) else []
+    _, classified_type = _classify_control(row)
+    return PageElement(
+        locator=locator,
+        role=role,
+        label=accessible,
+        name=control.name,
+        value=control.value,
+        placeholder=control.placeholder,
+        required=bool(row.get("required")),
+        disabled=bool(row.get("disabled")),
+        options=options,
+        input_type=classified_type,
+        form_scope=_optional_str(row.get("formScope")),
+    )
+
+
+def elements_from_metadata(rows: Sequence[Any]) -> list[PageElement]:
+    """Turn Playwright metadata rows into uniquely addressed page elements."""
+    staged = _staged_controls(rows)
+    peers = [control for _, control, _role in staged]
+    used: set[str] = set()
+    elements: list[PageElement] = []
+    for row, control, role in staged:
+        unique = _unique_selectors(control, peers, row)
+        locator = build_playwright_locator(control, used=used, unique_in_dom=unique)
+        used.add(locator)
+        elements.append(_page_element(row, control, locator, role))
+    return elements
+
+
+def _unsupported_aria_fill(
+    tag: str, input_type: str, aria_role: str, start: float
+) -> ActionResult | None:
+    if tag == "INPUT":
+        return None
+    if input_type == "radio" or aria_role == "radio":
+        widget = "radio"
+    elif input_type == "checkbox" or aria_role == "checkbox":
+        widget = "checkbox"
+    else:
+        return None
+    return ActionResult(
+        ok=False,
+        action="fill",
+        detail=f"custom ARIA {widget} is not fillable",
+        duration_ms=(time.perf_counter() - start) * 1000,
+    )
+
+
 class PlaywrightSession(BrowserSession):
     def __init__(self, page: Any, browser: Any, session_id: str, settings: Settings) -> None:
         self._page = page
@@ -105,14 +596,27 @@ class PlaywrightSession(BrowserSession):
         url = self._page.url
         title = await self._page.title()
         text = await self._page.inner_text("body") if include_text else None
+        if text is not None:
+            text = text[:MAX_TEXT_CHARS]
         elements = await self._extract_controls()
-        condition = self._detect_condition(url, text or "")
+        has_password_field = any(
+            element.input_type == "password" or (element.name or "").lower() == "password"
+            for element in elements
+        )
+        validation_errors = [element.error_text for element in elements if element.error_text]
         return PageObservation(
             url=url,
             title=title,
             text=text,
             elements=elements,
-            condition=condition,
+            questions=questions_from_elements(elements),
+            condition=detect_condition(
+                url,
+                text,
+                has_password_field=has_password_field,
+                validation_errors=validation_errors,
+            ),
+            validation_errors=validation_errors,
         )
 
     async def find_controls(self, *, role: ElementRole | None = None) -> list[PageElement]:
@@ -121,9 +625,91 @@ class PlaywrightSession(BrowserSession):
             elements = [el for el in elements if el.role is role]
         return elements
 
+    async def _fill_radio(self, locator: str, value: str, start: float) -> ActionResult:
+        first = self._page.locator(locator).first
+        name = await first.get_attribute("name")
+        form_index = await first.evaluate(
+            "el => el.form ? Array.from(document.forms).indexOf(el.form) : -1"
+        )
+        group = (
+            self._page.locator(f'input[type="radio"]{_css_attr("name", name)}')
+            if name
+            else self._page.locator(locator)
+        )
+        count = await group.count()
+        for index in range(count):
+            radio = group.nth(index)
+            radio_form_index = await radio.evaluate(
+                "el => el.form ? Array.from(document.forms).indexOf(el.form) : -1"
+            )
+            if radio_form_index != form_index:
+                continue
+            tag = await radio.evaluate("el => el.tagName")
+            if tag != "INPUT" or not await radio.is_enabled():
+                continue
+            option_value = await radio.get_attribute("value")
+            option_label = await radio.evaluate(
+                """el => {
+                  const aria = (el.getAttribute('aria-label') || '').trim();
+                  if (aria) return aria;
+                  if (el.id) {
+                    const lab = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+                    if (lab) return (lab.innerText || '').trim();
+                  }
+                  const wrap = el.closest('label');
+                  return wrap ? (wrap.innerText || '').trim() : '';
+                }"""
+            )
+            if not radio_answer_matches(
+                option_value=option_value,
+                option_label=option_label or None,
+                answer=value,
+            ):
+                continue
+            await radio.check()
+            return ActionResult(
+                ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
+            )
+        return ActionResult(
+            ok=False,
+            action="fill",
+            detail=f"no radio matching {value!r}",
+            duration_ms=(time.perf_counter() - start) * 1000,
+        )
+
+    async def _fill_checkbox(self, locator: str, value: str, start: float) -> ActionResult:
+        checked = checkbox_checked_from_answer(value)
+        if checked is None:
+            return ActionResult(
+                ok=False,
+                action="fill",
+                detail=f"checkbox answer {value!r} is not a recognized yes/no value",
+                duration_ms=(time.perf_counter() - start) * 1000,
+            )
+        await self._page.check(locator) if checked else await self._page.uncheck(locator)
+        return ActionResult(
+            ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
+        )
+
     async def fill_field(self, locator: str, value: str) -> ActionResult:
         start = time.perf_counter()
         try:
+            target = self._page.locator(locator).first
+            input_type = (await target.get_attribute("type") or "").lower()
+            aria_role = (await target.get_attribute("role") or "").lower()
+            tag = await target.evaluate("el => el.tagName")
+            unsupported = _unsupported_aria_fill(tag, input_type, aria_role, start)
+            if unsupported is not None:
+                return unsupported
+            if input_type == "radio" or aria_role == "radio":
+                return await self._fill_radio(locator, value, start)
+            if input_type == "checkbox" or aria_role == "checkbox":
+                return await self._fill_checkbox(locator, value, start)
+            if tag == "SELECT":
+                await self._page.select_option(locator, value)
+                return ActionResult(
+                    ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
+                )
             await self._page.fill(locator, value)
             return ActionResult(
                 ok=True, action="fill", duration_ms=(time.perf_counter() - start) * 1000
@@ -270,66 +856,14 @@ class PlaywrightSession(BrowserSession):
             log.warning("playwright.storage_state_not_saved", path=str(destination))
 
     async def _extract_controls(self) -> list[PageElement]:
-        elements: list[PageElement] = []
-        for selector, role in [
-            ("input[type='text']", ElementRole.TEXTBOX),
-            ("input[type='email']", ElementRole.TEXTBOX),
-            ("textarea", ElementRole.TEXTAREA),
-            ("select", ElementRole.SELECT),
-            ("input[type='checkbox']", ElementRole.CHECKBOX),
-            ("input[type='radio']", ElementRole.RADIO),
-            ("button", ElementRole.BUTTON),
-            ("a", ElementRole.LINK),
-            ("input[type='file']", ElementRole.FILE_INPUT),
-        ]:
-            handles = await self._page.query_selector_all(selector)
-            for handle in handles:
-                label = (
-                    await handle.get_attribute("aria-label")
-                    or await handle.get_attribute("name")
-                    or await handle.get_attribute("placeholder")
-                )
-                name = await handle.get_attribute("name")
-                value = await handle.get_attribute("value")
-                required = await handle.get_attribute("required") is not None
-                disabled = await handle.get_attribute("disabled") is not None
-                placeholder = await handle.get_attribute("placeholder")
-                options: list[str] = []
-                if role is ElementRole.SELECT:
-                    option_handles = await handle.query_selector_all("option")
-                    for opt in option_handles:
-                        text = await opt.inner_text()
-                        if text:
-                            options.append(text.strip())
-                elements.append(
-                    PageElement(
-                        locator=selector,
-                        role=role,
-                        label=label,
-                        name=name,
-                        value=value,
-                        placeholder=placeholder,
-                        required=required,
-                        disabled=disabled,
-                        options=options,
-                    )
-                )
-        return elements
-
-    @staticmethod
-    def _detect_condition(url: str, text: str) -> PageCondition:
-        lowered = text.lower()[:5000]
-        if any(marker in lowered for marker in ["captcha", "are you a robot", "please verify"]):
-            return PageCondition.HUMAN_CHALLENGE
-        if any(
-            marker in lowered for marker in ["sign in", "log in", "please log in", "login required"]
-        ):
-            return PageCondition.LOGIN_REQUIRED
-        if any(marker in lowered for marker in ["access denied", "blocked", "bot detection"]):
-            return PageCondition.AUTOMATION_BLOCKED
-        if "404" in lowered or "not found" in lowered:
-            return PageCondition.NOT_FOUND
-        return PageCondition.OK
+        try:
+            rows = await self._page.evaluate(_CONTROL_METADATA_JS)
+        except Exception:
+            log.debug("playwright.control_scan_failed", exc_info=True)
+            return []
+        if not isinstance(rows, list):
+            return []
+        return elements_from_metadata(rows)
 
 
 class PlaywrightBackend(BrowserBackend):

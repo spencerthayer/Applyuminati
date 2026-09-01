@@ -14,6 +14,7 @@ from applyuminati.plugins.browsers.shared import (
     MAX_TEXT_CHARS,
     detect_condition,
     parse_scanned_controls,
+    questions_from_elements,
     split_locator,
 )
 
@@ -37,6 +38,7 @@ __all__ = [
     "MAX_TEXT_CHARS",
     "detect_condition",
     "parse_scanned_controls",
+    "questions_from_elements",
     "register_browsers",
     "split_locator",
 ]

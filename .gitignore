@@ -217,3 +217,14 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .data/
+
+<<<<<<< Updated upstream
+<<<<<<< Updated upstream
+# Cursor session plans
+.cursor/plans/
+
+=======
+>>>>>>> Stashed changes
+=======
+>>>>>>> Stashed changes
+.opencode-tmp/

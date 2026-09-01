@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Playwright form fixture</title>
+</head>
+<body>
+  <form>
+    <label for="first">First name</label>
+    <input id="first" name="first" type="text" required>
+
+    <label>Last name <input name="last" type="text"></label>
+
+    <input>
+    <input>
+    <input type="text" name="hidden_template" style="display:none">
+    <input type="text" name="ghost_hidden" style="visibility:hidden">
+
+    <input type="email" name="email">
+    <input type="email" name="email">
+    <input type="email" data-qa="work-email">
+
+    <input type="radio" name="auth" value="yes" aria-label="Authorized to work">
+    <input type="radio" name="auth" value="no" aria-label="Not authorized to work">
+
+    <label for="country">Country</label>
+    <select id="country" name="country">
+      <option>US</option>
+      <option>CA</option>
+    </select>
+
+    <input type="text" role="combobox" aria-label="Job title" name="title">
+    <div role="combobox" aria-label="Department">Engineering</div>
+    <div role="radio" name="custom_auth" aria-label="ARIA yes" style="min-width:1em;min-height:1em"></div>
+    <div role="checkbox" aria-label="ARIA terms" style="min-width:1em;min-height:1em"></div>
+    <div role="searchbox" aria-label="Site search" style="min-width:1em;min-height:1em"></div>
+    <input type="text" role="searchbox" aria-label="Query searchbox">
+    <div role="menu" style="min-width:1em;min-height:1em">panel</div>
+    <button type="button" role="menu">Filters</button>
+    <textarea role="searchbox" aria-label="Find a question"></textarea>
+
+    <label>Upload resume <input type="file" name="resume"></label>
+    <label><input type="checkbox" name="terms"> I agree</label>
+    <div contenteditable="true" aria-label="Notes">draft</div>
+    <input type="search" name="q" placeholder="Search jobs" aria-label="Search jobs">
+    <a href="/help" role="link">Help</a>
+    <a href="/main">Main</a>
+    <button type="button">Next</button>
+  </form>
+</body>
+</html>

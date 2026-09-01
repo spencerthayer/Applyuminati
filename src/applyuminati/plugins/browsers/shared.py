@@ -11,20 +11,23 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Sequence
 from typing import Any
 
 from applyuminati.browser.base import ElementRole, PageCondition, PageElement
+from applyuminati.core.models.questionnaire import ApplicationQuestion, QuestionKind
 
 __all__ = [
     "CONTROL_SCAN_CALL_LITERAL",
     "MAX_TEXT_CHARS",
     "detect_condition",
     "parse_scanned_controls",
+    "questions_from_elements",
     "split_locator",
 ]
 
 #: JS expression that scans for interactive controls. Injected into ego lite
-#: scripts and evaluated by the Playwright backend's JS eval.
+#: scripts. Playwright builds its own locators and does not evaluate this.
 CONTROL_SCAN_CALL_LITERAL = """(function() {
   const controls = [];
   const sel = 'input, textarea, select, button, a[href], [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"]';
@@ -154,9 +157,161 @@ def parse_scanned_controls(scan: Any) -> list[PageElement]:
                 disabled=bool(item.get("disabled")),
                 options=item.get("options") or [],
                 error_text=item.get("errorText"),
+                input_type=item.get("input_type") or item.get("inputType"),
+                form_scope=item.get("form_scope") or item.get("formScope"),
             )
         )
     return elements
+
+
+_APPLICANT_INPUT_ROLES: frozenset[ElementRole] = frozenset(
+    {
+        ElementRole.TEXTBOX,
+        ElementRole.TEXTAREA,
+        ElementRole.SELECT,
+        ElementRole.CHECKBOX,
+        ElementRole.RADIO,
+    }
+)
+
+
+def _is_search_control(element: PageElement) -> bool:
+    return element.input_type == "search"
+
+
+def _is_unsupported_custom_widget(element: PageElement) -> bool:
+    """True for ARIA radio/checkbox/combobox widgets fill_field cannot drive."""
+    return (
+        (element.role is ElementRole.RADIO and element.input_type == "aria-radio")
+        or (element.role is ElementRole.CHECKBOX and element.input_type == "aria-checkbox")
+        or (element.role is ElementRole.SELECT and element.input_type == "combobox")
+    )
+
+
+_ROLE_QUESTION_KINDS: dict[ElementRole, QuestionKind] = {
+    ElementRole.TEXTAREA: QuestionKind.LONG_TEXT,
+    ElementRole.SELECT: QuestionKind.SINGLE_SELECT,
+    ElementRole.CHECKBOX: QuestionKind.BOOLEAN,
+    ElementRole.RADIO: QuestionKind.SINGLE_SELECT,
+}
+_INPUT_QUESTION_KINDS: dict[str, QuestionKind] = {
+    "number": QuestionKind.NUMBER,
+    "date": QuestionKind.DATE,
+    "url": QuestionKind.URL,
+}
+
+
+def _question_kind(element: PageElement) -> QuestionKind:
+    role_kind = _ROLE_QUESTION_KINDS.get(element.role)
+    if role_kind is not None:
+        return role_kind
+    return _INPUT_QUESTION_KINDS.get(element.input_type or "", QuestionKind.SHORT_TEXT)
+
+
+_BOOLEAN_OPTION_PAIRS: frozenset[frozenset[str]] = frozenset(
+    {
+        frozenset({"yes", "no"}),
+        frozenset({"true", "false"}),
+        frozenset({"y", "n"}),
+    }
+)
+
+
+def _radio_option_text(radio: PageElement, group: Sequence[PageElement]) -> str:
+    label = (radio.label or "").strip()
+    labels = [(item.label or "").strip() for item in group]
+    if label and labels.count(label) == 1:
+        return label
+    if radio.value:
+        return str(radio.value)
+    return label
+
+
+def _radio_question_text(group: Sequence[PageElement]) -> str:
+    labels = {(item.label or "").strip() for item in group if (item.label or "").strip()}
+    if len(labels) == 1:
+        return next(iter(labels))
+    name = (group[0].name or "").strip()
+    if name:
+        return name.replace("_", " ")
+    return next(iter(labels), "")
+
+
+def _radio_question_kind(options: Sequence[str]) -> QuestionKind:
+    folded = frozenset(option.strip().lower() for option in options)
+    if folded in _BOOLEAN_OPTION_PAIRS:
+        return QuestionKind.BOOLEAN
+    return QuestionKind.SINGLE_SELECT
+
+
+def questions_from_elements(elements: Sequence[PageElement]) -> list[ApplicationQuestion]:
+    """Map labelled applicant-input controls to questions.
+
+    Buttons, links, uploads, navigation, search boxes, generic
+    contenteditable regions, and custom ARIA radio/checkbox/combobox
+    widgets stay as :class:`PageElement` only. A question is emitted only
+    when a label or accessibility name, an applicant-input role, and a
+    locator all exist. Radios that share a ``name`` and form owner become
+    one question.
+    """
+    questions: list[ApplicationQuestion] = []
+    seen_radio_groups: set[tuple[str | None, str | None]] = set()
+    for element in elements:
+        if not element.locator:
+            continue
+        if element.role not in _APPLICANT_INPUT_ROLES:
+            continue
+        if element.disabled or _is_unsupported_custom_widget(element):
+            continue
+        label = (element.label or "").strip()
+        if not label:
+            continue
+        if element.input_type == "contenteditable":
+            continue
+        if _is_search_control(element):
+            continue
+        if element.role is ElementRole.RADIO and element.name:
+            radio_key = (element.form_scope, element.name)
+            if radio_key in seen_radio_groups:
+                continue
+            seen_radio_groups.add(radio_key)
+            group = [
+                item
+                for item in elements
+                if item.role is ElementRole.RADIO
+                and item.name == element.name
+                and item.form_scope == element.form_scope
+                and not item.disabled
+                and not _is_unsupported_custom_widget(item)
+            ]
+            options: list[str] = []
+            for radio in group:
+                option_text = _radio_option_text(radio, group)
+                if option_text:
+                    options.append(option_text)
+            text = _radio_question_text(group)
+            if not text:
+                continue
+            questions.append(
+                ApplicationQuestion(
+                    text=text,
+                    kind=_radio_question_kind(options),
+                    required=any(item.required for item in group),
+                    options=options,
+                    field_locator=element.locator,
+                )
+            )
+            continue
+        questions.append(
+            ApplicationQuestion(
+                text=label,
+                kind=_question_kind(element),
+                required=element.required,
+                options=list(element.options),
+                field_locator=element.locator,
+            )
+        )
+    return questions
 
 
 def split_locator(locator: str) -> tuple[str, str]:

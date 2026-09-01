@@ -386,7 +386,8 @@ _CONTROL_METADATA_JS = """() => {
       required: el.hasAttribute('required'),
       disabled: el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true',
       contenteditable: el.isContentEditable && el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA',
-      options: optionsFor(el)
+      options: optionsFor(el),
+      formScope: el.form ? ('form:' + Array.from(document.forms).indexOf(el.form)) : 'document'
     });
   });
   return rows;
@@ -529,6 +530,7 @@ def _page_element(
         disabled=bool(row.get("disabled")),
         options=options,
         input_type=classified_type,
+        form_scope=_optional_str(row.get("formScope")),
     )
 
 
@@ -626,6 +628,9 @@ class PlaywrightSession(BrowserSession):
     async def _fill_radio(self, locator: str, value: str, start: float) -> ActionResult:
         first = self._page.locator(locator).first
         name = await first.get_attribute("name")
+        form_index = await first.evaluate(
+            "el => el.form ? Array.from(document.forms).indexOf(el.form) : -1"
+        )
         group = (
             self._page.locator(f'input[type="radio"]{_css_attr("name", name)}')
             if name
@@ -634,6 +639,11 @@ class PlaywrightSession(BrowserSession):
         count = await group.count()
         for index in range(count):
             radio = group.nth(index)
+            radio_form_index = await radio.evaluate(
+                "el => el.form ? Array.from(document.forms).indexOf(el.form) : -1"
+            )
+            if radio_form_index != form_index:
+                continue
             tag = await radio.evaluate("el => el.tagName")
             if tag != "INPUT" or not await radio.is_enabled():
                 continue

@@ -151,6 +151,10 @@ class PageElement(BaseModel):
     #: HTML or ARIA type when useful (``email``, ``date``, ``contenteditable``).
     #: Optional so Ego and existing fakes stay compatible.
     input_type: str | None = None
+    #: Page-local form owner. Playwright stores ``form:0``, ``form:1``, or
+    #: ``document`` when the control has no form. Radio grouping uses this with
+    #: ``name``. Other backends may leave it unset.
+    form_scope: str | None = None
 
 
 class PageObservation(BaseModel):

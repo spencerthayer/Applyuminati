@@ -158,6 +158,7 @@ def parse_scanned_controls(scan: Any) -> list[PageElement]:
                 options=item.get("options") or [],
                 error_text=item.get("errorText"),
                 input_type=item.get("input_type") or item.get("inputType"),
+                form_scope=item.get("form_scope") or item.get("formScope"),
             )
         )
     return elements
@@ -250,10 +251,11 @@ def questions_from_elements(elements: Sequence[PageElement]) -> list[Application
     contenteditable regions, and custom ARIA radio/checkbox/combobox
     widgets stay as :class:`PageElement` only. A question is emitted only
     when a label or accessibility name, an applicant-input role, and a
-    locator all exist. Radios that share a ``name`` become one question.
+    locator all exist. Radios that share a ``name`` and form owner become
+    one question.
     """
     questions: list[ApplicationQuestion] = []
-    seen_radio_names: set[str] = set()
+    seen_radio_groups: set[tuple[str | None, str | None]] = set()
     for element in elements:
         if not element.locator:
             continue
@@ -269,14 +271,16 @@ def questions_from_elements(elements: Sequence[PageElement]) -> list[Application
         if _is_search_control(element):
             continue
         if element.role is ElementRole.RADIO and element.name:
-            if element.name in seen_radio_names:
+            radio_key = (element.form_scope, element.name)
+            if radio_key in seen_radio_groups:
                 continue
-            seen_radio_names.add(element.name)
+            seen_radio_groups.add(radio_key)
             group = [
                 item
                 for item in elements
                 if item.role is ElementRole.RADIO
                 and item.name == element.name
+                and item.form_scope == element.form_scope
                 and not item.disabled
                 and not _is_unsupported_custom_widget(item)
             ]

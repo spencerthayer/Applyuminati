@@ -23,6 +23,7 @@ from applyuminati.plugins.browsers.playwright_backend import (
 from applyuminati.plugins.browsers.shared import questions_from_elements
 
 FIXTURE = Path(__file__).parent / "fixtures" / "playwright_form.html"
+TWO_FORMS = Path(__file__).parent / "fixtures" / "playwright_two_forms.html"
 
 
 def test_two_text_inputs_without_id_get_distinct_nth_locators() -> None:
@@ -541,6 +542,50 @@ async def test_playwright_fill_hits_the_intended_control(tmp_path: Path) -> None
         aria_yes = next(element for element in observation.elements if element.label == "ARIA yes")
         aria_fill = await session.fill_field(aria_yes.locator, "ARIA yes")
         assert not aria_fill.ok
+    finally:
+        await session.close()
+        await backend.aclose()
+
+
+@pytest.mark.browser
+async def test_same_radio_name_in_two_forms_is_two_questions(tmp_path: Path) -> None:
+    pytest.importorskip("playwright.async_api")
+    settings = Settings(data_dir=tmp_path / "data", environment="ci")
+    backend = PlaywrightBackend(settings)
+    session = await backend.open_session()
+    assert isinstance(session, PlaywrightSession)
+    try:
+        observation = await session.navigate(TWO_FORMS.resolve().as_uri())
+        radios = [
+            element
+            for element in observation.elements
+            if element.role is ElementRole.RADIO and element.name == "auth"
+        ]
+        assert {element.form_scope for element in radios} == {"form:0", "form:1"}
+        auth_questions = [question for question in observation.questions if question.text == "auth"]
+        assert len(auth_questions) == 2
+        assert auth_questions[0].options == ["Yes", "No"]
+        assert auth_questions[1].options == ["Yes", "No"]
+
+        form_b_yes = next(
+            element
+            for element in radios
+            if element.form_scope == "form:1" and element.value == "yes"
+        )
+        form_b = next(
+            question for question in auth_questions if question.field_locator == form_b_yes.locator
+        )
+        picked = await session.fill_field(form_b.field_locator, "yes")
+        assert picked.ok
+        page = session._page
+        states = await page.evaluate(
+            """() => ({
+              a: [...document.querySelectorAll('#a input[name="auth"]')].map(el => el.checked),
+              b: [...document.querySelectorAll('#b input[name="auth"]')].map(el => el.checked),
+            })"""
+        )
+        assert states["a"] == [False, False]
+        assert states["b"] == [True, False]
     finally:
         await session.close()
         await backend.aclose()

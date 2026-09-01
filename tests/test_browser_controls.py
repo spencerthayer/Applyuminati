@@ -224,3 +224,47 @@ def test_custom_aria_widgets_are_not_questions() -> None:
         ]
     )
     assert questions == []
+
+
+def test_same_radio_name_in_different_forms_is_two_questions() -> None:
+    questions = questions_from_elements(
+        [
+            PageElement(
+                locator='form:0 [name="auth"][value="yes"]',
+                role=ElementRole.RADIO,
+                label="Yes",
+                name="auth",
+                value="yes",
+                form_scope="form:0",
+            ),
+            PageElement(
+                locator='form:0 [name="auth"][value="no"]',
+                role=ElementRole.RADIO,
+                label="No",
+                name="auth",
+                value="no",
+                form_scope="form:0",
+            ),
+            PageElement(
+                locator='form:1 [name="auth"][value="yes"]',
+                role=ElementRole.RADIO,
+                label="Yes",
+                name="auth",
+                value="yes",
+                form_scope="form:1",
+            ),
+            PageElement(
+                locator='form:1 [name="auth"][value="no"]',
+                role=ElementRole.RADIO,
+                label="No",
+                name="auth",
+                value="no",
+                form_scope="form:1",
+            ),
+        ]
+    )
+    assert len(questions) == 2
+    assert questions[0].options == ["Yes", "No"]
+    assert questions[1].options == ["Yes", "No"]
+    assert questions[0].field_locator == 'form:0 [name="auth"][value="yes"]'
+    assert questions[1].field_locator == 'form:1 [name="auth"][value="yes"]'

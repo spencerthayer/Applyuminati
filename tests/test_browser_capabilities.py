@@ -373,6 +373,8 @@ def test_playwright_earns_persistent_login_only_when_storage_state_is_configured
     )
     with_state = playwright_backend.PlaywrightBackend(configured).metadata
     assert with_state.supports(BrowserCapability.PERSISTENT_LOGIN)
+    # Configured, not "file exists": first run still advertises the capability.
+    assert not (tmp_path / "state.json").exists()
 
 
 async def test_playwright_handoff_refuses_rather_than_pretending(tmp_path) -> None:

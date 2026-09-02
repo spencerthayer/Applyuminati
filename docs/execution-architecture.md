@@ -388,7 +388,124 @@ reimplement ownership. Ownership maps directly:
 | `ownership: agentDelegatedToUser` | `ControlOwner.DELEGATED_TO_USER` |
 | `ownership: user` | `ControlOwner.USER` |
 
-## 7. JobSource and ApplicationDriver are different extension points
+## 7. Playwright: what the backend owns, and what it will not claim
+
+### 7.1 The browser belongs to the backend, the context belongs to the session
+
+```
+PlaywrightBackend
+  |
+  +-- async_playwright runtime
+  +-- Chromium process
+        |
+        +-- BrowserContext <- PlaywrightSession A  [tab, tab]
+        +-- BrowserContext <- PlaywrightSession B  [tab]
+```
+
+`PlaywrightSession.close()` saves the cookie jar if one is configured, closes
+its own context, and stops. It never touches the browser. Only
+`PlaywrightBackend.aclose()` closes the browser, and it closes every context
+still open first so no session writes storage state through a dead connection.
+Both are idempotent; a closed backend refuses further sessions rather than
+launching a second browser nobody is tracking.
+
+It used to work the other way round. Each session was handed the shared browser
+and closed it on the way out, so the first of two concurrent attempts to finish
+killed the other one's pages, and the survivor failed later with a "target
+closed" naming neither attempt. Two sessions are now genuinely independent:
+closing one leaves the other navigating, observing and filling.
+
+Session ids are unique among live sessions. Opening one with an id the backend
+is still holding raises `browser.session_id_in_use` before any context is
+built, rather than displacing the first: the displaced session would be
+unreachable, and its eventual close would deregister the survivor and hide that
+context from `aclose()`. Once a session closes, its id is free again. A resume
+whose checkpoint URL will not load closes the half-built session before the
+error propagates, since the caller never received a handle to close it.
+`aclose()` takes the same lock that construction uses, and a resume whose
+session was closed mid-navigation raises `browser.backend_closed` rather than
+returning the dead session as a successful open.
+
+### 7.2 Tabs
+
+`BrowserTab` is a value model — `id`, `url`, `title`, `active` — because tabs
+cross the Browser Host boundary and a Playwright `Page` cannot. The `id` is
+opaque, session-local, and never reused; it is deliberately not an index into
+`list_tabs()`, since that order shifts every time a tab closes.
+
+A session has one active tab, and `observe`, `navigate`, `fill_field`, `click`,
+`upload_file`, `screenshot` and control scanning all act on it. `activate_tab`
+is the only way to change the target. There is no per-call tab parameter: it
+would have to travel over the Browser Host protocol, and a command naming a tab
+the host had since closed would act on the wrong page instead of failing.
+
+Two rules about which tab ends up active:
+
+* A tab opened through `open_tab` becomes active, because the caller that asked
+  for it meant to work in it.
+* A tab the *site* opened does not. Popups are discovered through the context
+  and are listable and activatable, but a privacy notice an ATS threw up does
+  not silently become the target of the next fill.
+
+Closing the active tab selects the first tab the context still lists, and opens
+a blank one when it lists none, so a session is never left driving a page that
+no longer exists.
+
+### 7.3 Downloads
+
+`BrowserDownload` carries a filename and a path relative to the configured
+downloads directory (`<data_dir>/downloads`), never an absolute one. The
+suggested filename is the only string in the browser contract chosen end to end
+by a remote employer portal, and it arrives shaped like a path, so it is treated
+as a label: the stored name is derived from it, cannot contain a separator or a
+leading dot, and the resolved path is re-checked against the downloads root
+afterwards. Session ids are caller-supplied too, so the per-session
+subdirectory is resolved and proven to sit under the downloads root *before*
+it is created; `../../escape` and an absolute `/tmp/escape` are refused without
+mkdir. An existing file is never overwritten. `mime_type` is left unset
+rather than guessed from the extension, because a caller cannot tell a guess
+from something the server said.
+
+Downloads get their own directory rather than sharing `documents/`, which is
+what uploads are allowed to read, or `artifacts/`, which holds screenshots we
+took ourselves.
+
+### 7.4 What a Playwright restart does not restore
+
+`open_session(resume=checkpoint)` creates a **new** context, loads the
+configured cookie jar into it, and navigates to the checkpoint's url. That is
+the whole of it. Open tabs, DOM state, in-page JavaScript, form values and the
+back/forward stack are gone, and the checkpoint records `restores: ["url"]` so
+nobody reads it as a saved browser. The configured storage-state *path* is not
+copied into the checkpoint: resume already reads it from current settings, and
+the host path does not belong in attempt state. This is why Playwright
+advertises `PERSISTENT_LOGIN` when a storage-state path is configured and never
+`PERSISTENT_SESSION`: an ego lite task space outlives the process, a Playwright
+context does not.
+
+Concurrent sessions that share one storage-state file currently last-writer-wins
+on close. That is the present behaviour, not a guarantee that diverged cookies
+cannot clobber a newer login. Persistence and concurrency for that file belong
+to the next Playwright increment.
+
+### 7.5 A local capability is not a remote one
+
+Playwright advertises `MULTI_TAB` and `DOWNLOADS` because `PlaywrightSession`
+implements them in process. A Browser Host advertises the intersection of its
+backend's capabilities and what its dispatcher will actually carry out, and it
+does not carry out tabs or downloads yet: `HOST_UNDISPATCHABLE_CAPABILITIES`
+strips both from registration, and the four tab commands and `download` are
+refused with `CAPABILITY_UNAVAILABLE` naming the withheld capability. The two
+move together on purpose. A host that advertised an operation it then refused
+would be selected for the work and fail at the first call.
+
+ego lite claims neither. `openOrReuseTab` opens a tab, but the harness exposes
+no way to enumerate tabs, address one by a stable id, or close a single one, and
+its downloads land in the user's own browser download folder rather than
+anywhere Applyuminati chose. Its tab and download methods refuse explicitly, and
+its metadata omits both capabilities so selection never routes that work there.
+
+## 8. JobSource and ApplicationDriver are different extension points
 
 Discovery ends at a normalised job. Execution begins from the application URL.
 
@@ -413,7 +530,7 @@ hints and per-ATS learned knowledge. A source owns none of that.
 Registry: `APPLICATION_DRIVER_REGISTRY`, entry-point group
 `applyuminati.application_drivers`.
 
-## 8. Questionnaire answer authority
+## 9. Questionnaire answer authority
 
 Policies are per sensitivity class, with optional ATS and employer overrides:
 
@@ -437,7 +554,7 @@ that gets submitted does not become a verified fact: promotion into the claim
 ledger still requires `by_user=True`, which `core/provenance.py` already
 enforces.
 
-## 9. Structured failure and recovery
+## 10. Structured failure and recovery
 
 `ExecutionFailure` records category, driver, step, checkpoint, a redacted
 observation summary, attempted recovery, retryability and whether a human is
@@ -454,7 +571,7 @@ submission_uncertain     driver_bug
 Each maps to a `FailureCategory` so the existing recovery policy applies
 without a second taxonomy.
 
-## 10. Submission evidence
+## 11. Submission evidence
 
 Clicking the last button is not submission. Evidence carries a certainty:
 
@@ -468,7 +585,7 @@ Clicking the last button is not submission. Evidence carries a certainty:
 `UNCERTAIN` is reported honestly and produces a `USER_REVIEW` intervention
 rather than a `SUBMITTED` transition.
 
-## 11. Capability maturity
+## 12. Capability maturity
 
 Scaffolding must be distinguishable from production-tested behaviour. Every
 plugin descriptor carries a `maturity`:
@@ -486,7 +603,7 @@ against a live employer flow by a human. The matrix is generated from the
 registries by `applyuminati capabilities` and asserted by tests, so it cannot
 drift from the code.
 
-## 12. Delivery phases
+## 13. Delivery phases
 
 | Phase | Content | State |
 |---|---|---|

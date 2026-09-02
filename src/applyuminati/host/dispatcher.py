@@ -31,6 +31,13 @@ __all__ = [
 
 #: Capabilities a backend may have locally that this host will not execute.
 #: Advertising them would let a driver select the host and then fail immediately.
+#:
+#: A local backend implementing an operation is not the same claim as the host
+#: being able to carry it out remotely. The Playwright backend does tabs and
+#: downloads in-process; routing either over the wire needs the commands
+#: dispatched and the results framed, which has not been done. Until it is, what
+#: a host advertises is the intersection of the backend's capabilities and this
+#: set's complement.
 HOST_UNDISPATCHABLE_CAPABILITIES: frozenset[BrowserCapability] = frozenset(
     {
         BrowserCapability.JAVASCRIPT_EVAL,
@@ -39,6 +46,16 @@ HOST_UNDISPATCHABLE_CAPABILITIES: frozenset[BrowserCapability] = frozenset(
         BrowserCapability.NETWORK_INTERCEPT,
     }
 )
+
+#: The commands each undispatchable capability would carry, so the refusal names
+#: the capability the host withheld rather than saying "not implemented".
+_UNDISPATCHABLE_COMMANDS: dict[HostCommand, BrowserCapability] = {
+    HostCommand.OPEN_TAB: BrowserCapability.MULTI_TAB,
+    HostCommand.CLOSE_TAB: BrowserCapability.MULTI_TAB,
+    HostCommand.ACTIVATE_TAB: BrowserCapability.MULTI_TAB,
+    HostCommand.LIST_TABS: BrowserCapability.MULTI_TAB,
+    HostCommand.DOWNLOAD: BrowserCapability.DOWNLOADS,
+}
 
 
 def host_advertised_capabilities(capabilities: Iterable[BrowserCapability | str]) -> list[str]:
@@ -199,14 +216,18 @@ class CommandDispatcher:
                 raise _HostRefusal(HostErrorCode.CAPABILITY_UNAVAILABLE, msg)
             msg = "evaluate is not exposed as host-scoped script"
             raise _HostRefusal(HostErrorCode.UNKNOWN_COMMAND, msg)
-        if command.command in {
-            HostCommand.OPEN_TAB,
-            HostCommand.CLOSE_TAB,
-            HostCommand.ACTIVATE_TAB,
-            HostCommand.LIST_TABS,
-            HostCommand.DOWNLOAD,
-        }:
-            msg = f"{command.command.value} is not implemented on this host yet"
+        capability = _UNDISPATCHABLE_COMMANDS.get(command.command)
+        if capability is not None:
+            # The local session may well implement this — the Playwright backend
+            # does — but the host does not dispatch it, and
+            # HOST_UNDISPATCHABLE_CAPABILITIES keeps the matching capability out
+            # of what this host advertises. The two have to move together: a
+            # host that refused a command it had advertised would be selected
+            # for the work and then fail at the first call.
+            msg = (
+                f"{command.command.value} is not dispatched by this host; "
+                f"{capability.value} is not advertised"
+            )
             raise _HostRefusal(HostErrorCode.CAPABILITY_UNAVAILABLE, msg)
         if command.command is HostCommand.HEALTH:
             return {"backend": hosted.backend}

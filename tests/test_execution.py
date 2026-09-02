@@ -12,7 +12,12 @@ import pytest
 from applyuminati.applications.detect import detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcome, DriverOutcomeKind
 from applyuminati.applications.runner import agent_still_owns
-from applyuminati.browser.base import BrowserSession, ControlOwner
+from applyuminati.browser.base import (
+    BrowserCapability,
+    BrowserCapabilityError,
+    BrowserSession,
+    ControlOwner,
+)
 from applyuminati.browser.host_manager import BrowserHostManager, HostCommandError, LiveHost
 from applyuminati.browser.host_protocol import (
     BackendAdvertisement,
@@ -887,6 +892,59 @@ async def test_a_refused_observation_reports_the_host_reason_not_a_schema_error(
     assert refused.ok is False
     assert refused.detail is not None
     assert "owns this session" in refused.detail
+
+
+async def test_a_host_that_cannot_do_tabs_raises_a_capability_error_not_a_host_error() -> None:
+    """One exception type whether the session is local or remote.
+
+    A caller should not have to catch ``BrowserCapabilityError`` for a local
+    Playwright session and ``HostCommandError`` for a remote one to learn the
+    same fact. Only ``capability_unavailable`` is translated: "the laptop is
+    asleep" still arrives as a host error, because it calls for different
+    recovery.
+    """
+
+    class _NoTabs:
+        async def dispatch(self, *_args: Any, **_kwargs: Any) -> ResultMessage:
+            return ResultMessage(
+                command_id="c1",
+                ok=False,
+                error_code=HostErrorCode.CAPABILITY_UNAVAILABLE,
+                error_message=(
+                    "list_tabs is not dispatched by this host; multi_tab is not advertised"
+                ),
+            )
+
+    hosted = HostedBrowserSession(cast(Any, _NoTabs()), HOST_ID, "s1")
+    with pytest.raises(BrowserCapabilityError) as listed:
+        await hosted.list_tabs()
+    assert listed.value.capability is BrowserCapability.MULTI_TAB
+    assert "multi_tab is not advertised" in listed.value.message
+
+    with pytest.raises(BrowserCapabilityError) as downloaded:
+        await hosted.download("#offer")
+    assert downloaded.value.capability is BrowserCapability.DOWNLOADS
+
+    # The ActionResult pair answers instead, carrying the host's own words.
+    refused = await hosted.activate_tab("tab-1")
+    assert refused.ok is False
+    assert "multi_tab" in (refused.detail or "")
+
+
+async def test_a_sleeping_host_is_still_a_host_error_not_a_capability_one() -> None:
+    class _Gone:
+        async def dispatch(self, *_args: Any, **_kwargs: Any) -> ResultMessage:
+            return ResultMessage(
+                command_id="c1",
+                ok=False,
+                error_code=HostErrorCode.BACKEND_UNAVAILABLE,
+                error_message="host went away",
+            )
+
+    hosted = HostedBrowserSession(cast(Any, _Gone()), HOST_ID, "s1")
+    with pytest.raises(HostCommandError) as raised:
+        await hosted.list_tabs()
+    assert raised.value.error_code is HostErrorCode.BACKEND_UNAVAILABLE
 
 
 async def test_control_state_fails_closed_when_the_host_errors() -> None:

@@ -366,11 +366,23 @@ class Settings(BaseSettings):
         return self.data_dir / "documents"
 
     @property
+    def downloads_dir(self) -> Path:
+        """Where files a *site* sent us are written.
+
+        Separate from :attr:`documents_dir` and :attr:`artifacts_dir` because
+        the contents differ in who chose them. Documents are the user's resumes
+        and are what an upload is allowed to read; artifacts are screenshots we
+        took. A download is named and filled by a remote employer portal, so it
+        gets its own directory that nothing else reads back by default.
+        """
+        return self.data_dir / "downloads"
+
+    @property
     def config_path(self) -> Path:
         return self.data_dir / CONFIG_FILENAME
 
     def ensure_directories(self) -> None:
-        for path in (self.data_dir, self.artifacts_dir, self.documents_dir):
+        for path in (self.data_dir, self.artifacts_dir, self.documents_dir, self.downloads_dir):
             path.mkdir(parents=True, exist_ok=True)
 
     def enabled_sources(self) -> list[str]:

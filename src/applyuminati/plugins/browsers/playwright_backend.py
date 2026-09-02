@@ -7,6 +7,8 @@ message when the import fails or browsers are not downloaded.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import re
 import time
 from collections.abc import Callable, Sequence
@@ -19,14 +21,24 @@ from applyuminati.browser.base import (
     BrowserBackend,
     BrowserCapability,
     BrowserCheckpoint,
+    BrowserDownload,
     BrowserMetadata,
     BrowserSession,
+    BrowserTab,
     ControlOwner,
     ElementRole,
     PageCondition,
     PageElement,
     PageObservation,
     browser_plugin,
+    session_closed_error,
+)
+from applyuminati.browser.downloads import ensure_download_directory, resolve_download_path
+from applyuminati.core.errors import (
+    ApplyuminatiError,
+    BackendUnavailableError,
+    DuplicateActionError,
+    FailureCategory,
 )
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.logging import get_logger
@@ -59,6 +71,11 @@ __all__ = [
 #: hand a container's browser to a person or to learn when they are done. Those
 #: absences are the point: they are what stops an authenticated application from
 #: being routed here.
+#:
+#: MULTI_TAB and DOWNLOADS are claimed because :class:`PlaywrightSession`
+#: implements them, not because Playwright is capable of them in principle. What
+#: a *Browser Host* advertises is narrower still: see
+#: :data:`applyuminati.host.dispatcher.HOST_UNDISPATCHABLE_CAPABILITIES`.
 _CAPABILITIES = frozenset(
     {
         BrowserCapability.NAVIGATE,
@@ -68,6 +85,7 @@ _CAPABILITIES = frozenset(
         BrowserCapability.HEADLESS,
         BrowserCapability.JAVASCRIPT_EVAL,
         BrowserCapability.MULTI_TAB,
+        BrowserCapability.DOWNLOADS,
     }
 )
 
@@ -567,13 +585,45 @@ def _unsupported_aria_fill(
     )
 
 
+#: What every operation reports once the context is gone. Mirrors ego lite,
+#: where a call on a closed session is an answer rather than an exception.
+_CLOSED_DETAIL = "browser session is closed"
+
+
 class PlaywrightSession(BrowserSession):
-    def __init__(self, page: Any, browser: Any, session_id: str, settings: Settings) -> None:
-        self._page = page
-        self._browser = browser
+    """One Playwright ``BrowserContext`` and every page inside it.
+
+    The session owns the context and nothing above it. The browser process
+    belongs to :class:`PlaywrightBackend` and is shared with every other live
+    session, so :meth:`close` closes this context and leaves the browser
+    running. The previous arrangement handed each session the browser and let it
+    close that on the way out, which meant the first attempt to finish killed
+    the pages of every attempt still running beside it.
+
+    Within the context the session may hold several tabs. Exactly one is active
+    at a time, and every page-scoped operation resolves :attr:`_page` fresh
+    rather than holding the page it was constructed with.
+    """
+
+    def __init__(
+        self,
+        context: Any,
+        *,
+        session_id: str,
+        settings: Settings,
+        on_close: Callable[[PlaywrightSession], None] | None = None,
+    ) -> None:
+        self._context = context
         self._session_id = session_id
         self._settings = settings
         self._owner = ControlOwner.AGENT
+        self._on_close = on_close
+        self._closed = False
+        self._active_page: Any | None = None
+        #: Page object to the id callers hold. Ids are handed out once and never
+        #: reused, so a caller cannot address a new tab with an old id.
+        self._tab_ids: dict[Any, str] = {}
+        self._tab_counter = 0
 
     @property
     def session_id(self) -> str:
@@ -584,18 +634,97 @@ class PlaywrightSession(BrowserSession):
         return self._owner
 
     @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @property
     def task_space_id(self) -> str | None:
         """None: a Playwright context does not outlive this process."""
         return None
 
+    # -- active page ------------------------------------------------------
+
+    def _open_pages(self) -> list[Any]:
+        if self._context is None or self._closed:
+            return []
+        return [page for page in self._context.pages if not page.is_closed()]
+
+    def _track_pages(self) -> list[Any]:
+        """Give ids to pages we have not seen, and forget ones that closed.
+
+        Pages arrive here without having been opened through us. A link
+        targeting ``_blank`` puts one in the context directly, which is how ATS
+        portals show a privacy notice or an OAuth window, and a caller who could
+        not see it would have no way to read or dismiss it.
+        """
+        pages = self._open_pages()
+        for page in pages:
+            if page not in self._tab_ids:
+                self._tab_counter += 1
+                self._tab_ids[page] = f"tab-{self._tab_counter}"
+        live = {id(page) for page in pages}
+        for gone in [page for page in self._tab_ids if id(page) not in live]:
+            del self._tab_ids[gone]
+        return pages
+
+    def _resolve_active_page(self) -> Any | None:
+        """The page every page-scoped operation acts on right now."""
+        page = self._active_page
+        if page is not None and not page.is_closed():
+            return page
+        pages = self._open_pages()
+        self._active_page = pages[0] if pages else None
+        return self._active_page
+
+    @property
+    def _page(self) -> Any:
+        """The active page, resolved per call rather than captured at birth.
+
+        Reading this on every operation is what makes :meth:`activate_tab`
+        actually redirect them, and it is why closing a tab cannot leave the
+        session driving a page that no longer exists.
+
+        Raises on a closed session. The action methods below already turn a
+        raised exception into ``ok=False``, so that is the closed-session answer
+        they report.
+        """
+        page = self._resolve_active_page()
+        if page is None:
+            raise session_closed_error(self._session_id)
+        return page
+
+    @staticmethod
+    async def _safe_title(page: Any) -> str | None:
+        try:
+            return (await page.title()) or None
+        except Exception:
+            # A tab mid-navigation still belongs in the list; dropping it would
+            # hide the popup the caller is looking for.
+            return None
+
+    def _closed_result(self, action: str) -> ActionResult:
+        return ActionResult(
+            ok=False, action=action, detail=_CLOSED_DETAIL, condition=PageCondition.UNKNOWN
+        )
+
+    def _closed_observation(self, url: str) -> PageObservation:
+        return PageObservation(url=url, condition=PageCondition.UNKNOWN, text=_CLOSED_DETAIL)
+
+    # -- navigation and observation ---------------------------------------
+
     async def navigate(self, url: str, *, wait_for_load: bool = True) -> PageObservation:
+        if self._closed:
+            return self._closed_observation(url)
         await self._page.goto(url, wait_until="domcontentloaded" if wait_for_load else "commit")
         return await self.observe()
 
     async def observe(self, *, include_text: bool = True) -> PageObservation:
-        url = self._page.url
-        title = await self._page.title()
-        text = await self._page.inner_text("body") if include_text else None
+        if self._closed:
+            return self._closed_observation("")
+        page = self._page
+        url = page.url
+        title = await page.title()
+        text = await page.inner_text("body") if include_text else None
         if text is not None:
             text = text[:MAX_TEXT_CHARS]
         elements = await self._extract_controls()
@@ -620,6 +749,8 @@ class PlaywrightSession(BrowserSession):
         )
 
     async def find_controls(self, *, role: ElementRole | None = None) -> list[PageElement]:
+        if self._closed:
+            raise session_closed_error(self._session_id)
         elements = await self._extract_controls()
         if role is not None:
             elements = [el for el in elements if el.role is role]
@@ -770,16 +901,164 @@ class PlaywrightSession(BrowserSession):
             return ActionResult(ok=False, action="wait_navigation", detail=str(exc))
 
     async def screenshot(self, *, relative_path: str) -> str:
+        if self._closed:
+            raise session_closed_error(self._session_id)
         full_path = self._settings.artifacts_dir / relative_path
         full_path.parent.mkdir(parents=True, exist_ok=True)
         await self._page.screenshot(path=str(full_path))
         return relative_path
 
+    # -- tabs -------------------------------------------------------------
+
+    async def list_tabs(self) -> list[BrowserTab]:
+        if self._closed:
+            raise session_closed_error(self._session_id)
+        active = self._resolve_active_page()
+        return [
+            BrowserTab(
+                id=self._tab_ids[page],
+                url=page.url,
+                title=await self._safe_title(page),
+                active=page is active,
+            )
+            for page in self._track_pages()
+        ]
+
+    async def open_tab(self, url: str | None = None) -> BrowserTab:
+        if self._closed:
+            raise session_closed_error(self._session_id)
+        page = await self._context.new_page()
+        if url:
+            try:
+                await page.goto(url, wait_until="domcontentloaded")
+            except Exception:
+                # The caller never received this tab. Leaving it in the context
+                # would make a later list_tabs report a blank page nobody asked
+                # for, while the exception said the open failed.
+                with contextlib.suppress(Exception):
+                    await page.close()
+                raise
+        # A caller that just asked for a tab means to work in it. Leaving the
+        # previous tab active would send the next fill to the wrong page, and
+        # the caller would have no signal that it had happened.
+        self._active_page = page
+        self._track_pages()
+        return BrowserTab(
+            id=self._tab_ids[page],
+            url=page.url,
+            title=await self._safe_title(page),
+            active=True,
+        )
+
+    def _page_for(self, tab_id: str) -> Any | None:
+        self._track_pages()
+        return next((page for page, known in self._tab_ids.items() if known == tab_id), None)
+
+    async def activate_tab(self, tab_id: str) -> ActionResult:
+        if self._closed:
+            return self._closed_result("activate_tab")
+        page = self._page_for(tab_id)
+        if page is None:
+            return ActionResult(
+                ok=False, action="activate_tab", detail=f"no tab {tab_id!r} in this session"
+            )
+        self._active_page = page
+        with contextlib.suppress(Exception):
+            # Window ordering, which only exists when headed. Failing an
+            # activation because a headless context has no window to raise
+            # would break the operation over its cosmetic half.
+            await page.bring_to_front()
+        return ActionResult(ok=True, action="activate_tab", detail=tab_id)
+
+    async def close_tab(self, tab_id: str) -> ActionResult:
+        if self._closed:
+            return self._closed_result("close_tab")
+        page = self._page_for(tab_id)
+        if page is None:
+            return ActionResult(
+                ok=False, action="close_tab", detail=f"no tab {tab_id!r} in this session"
+            )
+        await page.close()
+        self._tab_ids.pop(page, None)
+        # Closing the active tab picks the first tab the context still lists,
+        # and opens a blank one when it lists none. A session left pointing at a
+        # closed page fails every later operation with a Playwright error that
+        # names neither the tab nor the session.
+        if self._resolve_active_page() is None:
+            self._active_page = await self._context.new_page()
+        self._track_pages()
+        return ActionResult(ok=True, action="close_tab", detail=tab_id)
+
+    # -- downloads --------------------------------------------------------
+
+    async def download(
+        self, locator: str, *, timeout_seconds: float | None = None
+    ) -> BrowserDownload:
+        """Click ``locator`` while listening for the file it sends back.
+
+        The listener has to be installed before the click, because Chromium
+        surfaces the download as an event during navigation; polling afterwards
+        finds nothing.
+        """
+        if self._closed:
+            raise session_closed_error(self._session_id)
+        page = self._page
+        timeout = timeout_seconds or self._settings.browser.navigation_timeout_seconds
+        try:
+            async with page.expect_download(timeout=int(timeout * 1000)) as pending:
+                await page.click(locator)
+            handle = await pending.value
+        except Exception as exc:
+            raise ApplyuminatiError(
+                f"clicking {locator!r} produced no download",
+                code="browser.no_download",
+                category=FailureCategory.EXTRACTION_DRIFT,
+                details={"locator": locator, "detail": str(exc)[:300]},
+            ) from exc
+
+        root = self._settings.downloads_dir
+        # Session ids are caller-supplied. Validate the directory against the
+        # downloads root *before* mkdir, otherwise ``../../outside`` creates
+        # the outside path and the later check only notices after the fact.
+        directory = ensure_download_directory(root, root / self._session_id)
+        suggested = handle.suggested_filename or None
+        destination = resolve_download_path(root, directory, suggested)
+        await handle.save_as(str(destination))
+        return BrowserDownload(
+            filename=destination.name,
+            relative_path=destination.relative_to(root.resolve()).as_posix(),
+            suggested_filename=suggested,
+            # Playwright does not report a content type for a download, and a
+            # type guessed from the extension is indistinguishable to the caller
+            # from one the server actually sent.
+            mime_type=None,
+            size=destination.stat().st_size if destination.is_file() else None,
+            source_url=handle.url or None,
+        )
+
     async def checkpoint(self) -> BrowserCheckpoint:
+        if self._closed:
+            raise session_closed_error(self._session_id)
+        page = self._resolve_active_page()
+        storage_configured = self._settings.browser.playwright_storage_state is not None
         return BrowserCheckpoint(
             session_id=self._session_id,
-            url=self._page.url,
-            backend_state={"type": "playwright"},
+            url=page.url if page is not None else "",
+            backend_state={
+                "type": "playwright",
+                # Spelled out because a checkpoint is easy to read as a saved
+                # browser, and this one is not. Resuming opens a *new* context,
+                # loads the cookie jar when one is configured, and navigates to
+                # this url. Open tabs, DOM state, in-page JavaScript and the
+                # back/forward stack are gone, and no amount of reading this
+                # record brings them back. Ego lite task spaces are what
+                # PERSISTENT_SESSION means; this is not that.
+                #
+                # The configured storage-state *path* is not recorded. Resume
+                # already reads it from current settings, and persisting the
+                # host path would leak it into attempt state, logs, and APIs.
+                "restores": ["url", *(["storage_state"] if storage_configured else [])],
+            },
         )
 
     async def request_human_control(self, instruction: str) -> ActionResult:
@@ -832,12 +1111,25 @@ class PlaywrightSession(BrowserSession):
         return ActionResult(ok=True, action="reclaim_control", detail="already the owner")
 
     async def close(self) -> None:
-        try:
-            await self._save_storage_state()
-            await self._page.close()
-            await self._browser.close()
-        except Exception:
-            log.debug("playwright.close_failed", exc_info=True)
+        """Close this session's context, and only this session's context.
+
+        The browser is shared, so it is deliberately absent from everything
+        below. Idempotent: a second call returns immediately rather than
+        reaching for a context that is already gone.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        await self._save_storage_state()
+        if self._context is not None:
+            try:
+                await self._context.close()
+            except Exception:
+                log.debug("playwright.context_close_failed", exc_info=True)
+        self._tab_ids.clear()
+        self._active_page = None
+        if self._on_close is not None:
+            self._on_close(self)
 
     async def _save_storage_state(self) -> None:
         """Persist cookies so the PERSISTENT_LOGIN claim is actually true.
@@ -845,13 +1137,20 @@ class PlaywrightSession(BrowserSession):
         The context was loading ``storage_state`` and never writing it, so a
         login survived exactly as long as the process. The capability is now
         advertised only when this path is configured, and it has to be earned.
+
+        Written from the context, before it closes. Concurrent sessions that
+        share one file currently last-writer-wins: whichever context closes
+        last overwrites the jar. That is the present behaviour, not a claim
+        that diverged cookies cannot clobber a newer login. Persistence and
+        concurrency semantics for this file belong to the next Playwright
+        increment, not here.
         """
         destination = self._settings.browser.playwright_storage_state
-        if destination is None:
+        if destination is None or self._context is None:
             return
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
-            await self._page.context.storage_state(path=str(destination))
+            await self._context.storage_state(path=str(destination))
         except Exception:
             log.warning("playwright.storage_state_not_saved", path=str(destination))
 
@@ -867,14 +1166,45 @@ class PlaywrightSession(BrowserSession):
 
 
 class PlaywrightBackend(BrowserBackend):
+    """Owns the Playwright runtime and the browser process. Sessions own contexts.
+
+    One browser, many contexts. A context is cheap and already isolated —
+    separate cookies, separate storage, separate pages — which is exactly what a
+    session needs, while a browser per session would multiply a concurrent run's
+    memory by a Chromium process each.
+
+    The ownership split is the point of this class. Nothing below it may close
+    the browser, and :meth:`aclose` is the only thing that does.
+    """
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._playwright: Any | None = None
         self._browser: Any | None = None
+        self._sessions: dict[str, PlaywrightSession] = {}
+        self._shutdown = False
+        #: Serialises the launch, so two sessions opening at once start one
+        #: browser rather than two, of which one would be orphaned.
+        self._launching = asyncio.Lock()
+        #: Serialises the duplicate-id check through registration. The check
+        #: alone is not enough: two concurrent opens of the same id both pass
+        #: it, then the later assignment orphans the first context.
+        self._opening = asyncio.Lock()
 
     @property
     def metadata(self) -> BrowserMetadata:
         return _metadata(self._settings)
+
+    @property
+    def browser_running(self) -> bool:
+        """Whether a live browser process is currently attached."""
+        browser = self._browser
+        return browser is not None and bool(browser.is_connected())
+
+    @property
+    def live_session_ids(self) -> tuple[str, ...]:
+        """Sessions still holding a context. Ordered by when they opened."""
+        return tuple(self._sessions)
 
     async def health(self) -> HealthReport:
         try:
@@ -911,37 +1241,156 @@ class PlaywrightBackend(BrowserBackend):
         resume: BrowserCheckpoint | None = None,
         task_space: str | None = None,
     ) -> BrowserSession:
+        """Open one isolated context, optionally re-entering a checkpoint's url.
+
+        ``resume`` is honoured only as far as it honestly can be. A new context
+        is created, the configured cookie jar is loaded into it, and the
+        checkpoint's url is opened. Tabs, DOM state, in-page JavaScript and
+        history are not restored and cannot be: nothing recorded them, because
+        a Playwright context does not survive the process that made it. That is
+        the same reason this backend does not advertise PERSISTENT_SESSION.
+        """
+        # Playwright has no workspace that outlives the context, so it cannot
+        # honour a task-space name either.
+        _ = task_space
+        sid = session_id or (resume.session_id if resume else None) or new_ulid()
+        async with self._opening:
+            if self._shutdown:
+                raise self._closed_error()
+            if sid in self._sessions:
+                # Checked before a context is built, so a retried create_session
+                # neither launches a second context nor displaces the first. Two
+                # live sessions under one id is not a state to reconcile: the
+                # displaced one would be unreachable, and its later close would
+                # evict the survivor from the registry. Held under ``_opening``
+                # so two concurrent opens cannot both pass the check.
+                raise DuplicateActionError(
+                    f"session {sid!r} is already open on this backend; "
+                    "close it before opening another with the same id",
+                    code="browser.session_id_in_use",
+                    details={"session_id": sid, "backend": "playwright"},
+                )
+
+            browser = await self._ensure_browser()
+            context = await browser.new_context(storage_state=self._storage_state_to_load())
+            await context.new_page()
+            session = PlaywrightSession(
+                context,
+                session_id=sid,
+                settings=self._settings,
+                on_close=self._forget,
+            )
+            self._sessions[sid] = session
+        if resume is not None and resume.url:
+            try:
+                await session.navigate(resume.url)
+            except Exception as exc:
+                # The caller never received this session, so nothing else will
+                # close it. Leaving it registered would hold a context until the
+                # whole backend shut down.
+                await session.close()
+                if self._shutdown:
+                    # aclose() tore the page down mid-goto. The Playwright
+                    # ERR_ABORTED is real but names neither the session nor the
+                    # backend; the closed-backend error does.
+                    raise self._closed_error() from exc
+                raise
+        return await self._require_live(session)
+
+    async def _require_live(self, session: PlaywrightSession) -> PlaywrightSession:
+        """Refuse to hand back a session that shutdown already took.
+
+        Resume navigation sits outside ``_opening`` so other opens are not
+        blocked on it. ``aclose`` can therefore close this session after
+        registration and before we return. ``navigate`` turns a closed session
+        into a ``PageObservation``, which would look like a successful open of
+        a dead session. Under the lock, that case is a closed backend.
+        """
+        async with self._opening:
+            if self._shutdown or session.closed:
+                if not session.closed:
+                    await session.close()
+                raise self._closed_error()
+            return session
+
+    def _storage_state_to_load(self) -> str | None:
+        """The cookie jar to seed a context with, if there is one to read yet.
+
+        Playwright raises ``FileNotFoundError`` for a ``storage_state`` path that
+        does not exist, so configuring the setting used to make the *first*
+        session fail outright: nothing writes the file until a session closes,
+        and no session could open to write it. Absent means "no cookies yet",
+        which is the honest starting state rather than an error.
+        """
+        configured = self._settings.browser.playwright_storage_state
+        if configured is None or not configured.is_file():
+            return None
+        return str(configured)
+
+    def _forget(self, session: PlaywrightSession) -> None:
+        """Drop a session from the registry, if it is still the one registered.
+
+        Identity-checked rather than keyed by id alone. Popping by id would let
+        a late close from a session that had already been replaced evict its
+        replacement, and the survivor's context would then be missed by
+        :meth:`aclose`.
+        """
+        if self._sessions.get(session.session_id) is session:
+            del self._sessions[session.session_id]
+
+    def _closed_error(self) -> BackendUnavailableError:
+        return BackendUnavailableError(
+            "the playwright backend has been closed; construct a new one to open sessions",
+            code="browser.backend_closed",
+            details={"backend": "playwright"},
+        )
+
+    async def _ensure_browser(self) -> Any:
         from playwright.async_api import async_playwright
 
-        # Playwright has no workspace that outlives the context, so it cannot
-        # honour a task-space name and does not claim PERSISTENT_SESSION.
-        _ = task_space
-
-        if self._playwright is None:
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(
-                headless=self._settings.browser.headless
-            )
-        browser = self._browser
-        if browser is None:
-            msg = "playwright browser failed to start"
-            raise RuntimeError(msg)
-        context = await browser.new_context(
-            storage_state=str(self._settings.browser.playwright_storage_state)
-            if self._settings.browser.playwright_storage_state
-            else None
-        )
-        page = await context.new_page()
-        sid = session_id or new_ulid()
-        return PlaywrightSession(page, browser, sid, self._settings)
+        async with self._launching:
+            if self._shutdown:
+                raise self._closed_error()
+            if self._browser is not None and not self._browser.is_connected():
+                # The process died under us: an OOM kill, a crash. Relaunching
+                # is right; handing the dead handle to a new session is not.
+                log.warning("playwright.browser_disconnected")
+                self._browser = None
+            if self._playwright is None:
+                self._playwright = await async_playwright().start()
+            if self._browser is None:
+                self._browser = await self._playwright.chromium.launch(
+                    headless=self._settings.browser.headless
+                )
+            return self._browser
 
     async def aclose(self) -> None:
-        if self._browser is not None:
-            await self._browser.close()
-        if self._playwright is not None:
-            await self._playwright.stop()
-        self._browser = None
-        self._playwright = None
+        """Close remaining contexts, then the browser, then the runtime.
+
+        Ordered, because closing the browser first would leave each session
+        writing its storage state through a dead connection. Idempotent, and
+        permanent: a closed backend refuses to open further sessions rather than
+        quietly launching a second browser nobody is tracking.
+
+        Takes ``_opening`` so shutdown cannot interleave with construction or
+        with the live-session handoff at the end of :meth:`open_session`.
+        """
+        async with self._opening:
+            self._shutdown = True
+            for session in list(self._sessions.values()):
+                try:
+                    await session.close()
+                except Exception:
+                    log.debug("playwright.session_close_failed", exc_info=True)
+            self._sessions.clear()
+            if self._browser is not None:
+                with contextlib.suppress(Exception):
+                    await self._browser.close()
+                self._browser = None
+            if self._playwright is not None:
+                with contextlib.suppress(Exception):
+                    await self._playwright.stop()
+                self._playwright = None
 
 
 PLUGIN = browser_plugin(

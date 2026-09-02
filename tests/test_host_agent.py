@@ -10,6 +10,8 @@ from applyuminati.browser.base import (
     ActionResult,
     BrowserCapability,
     BrowserCheckpoint,
+    BrowserDownload,
+    BrowserTab,
     ControlOwner,
     ElementRole,
     PageElement,
@@ -73,6 +75,27 @@ class _Session:
 
     async def screenshot(self, *, relative_path: str) -> str:
         return relative_path
+
+    # Implemented, unlike the drivers' fake, so the dispatcher tests below prove
+    # the host refuses tab and download commands on its own account rather than
+    # because the session behind it happened to be incapable.
+
+    async def list_tabs(self) -> list[BrowserTab]:
+        return [BrowserTab(id="tab-1", url="https://example.com", active=True)]
+
+    async def open_tab(self, url: str | None = None) -> BrowserTab:
+        return BrowserTab(id="tab-2", url=url or "about:blank", active=True)
+
+    async def activate_tab(self, tab_id: str) -> ActionResult:
+        return ActionResult(ok=True, action="activate_tab", detail=tab_id)
+
+    async def close_tab(self, tab_id: str) -> ActionResult:
+        return ActionResult(ok=True, action="close_tab", detail=tab_id)
+
+    async def download(
+        self, locator: str, *, timeout_seconds: float | None = None
+    ) -> BrowserDownload:
+        return BrowserDownload(filename="offer.pdf", relative_path="s1/offer.pdf")
 
     async def checkpoint(self) -> BrowserCheckpoint:
         return BrowserCheckpoint(session_id=self.session_id, url="https://example.com")
@@ -170,6 +193,54 @@ async def test_advertise_backends_never_promises_undispatchable_operations() -> 
     for advertisement in advertised.values():
         overlap = set(advertisement.capabilities) & forbidden
         assert overlap == set(), f"{advertisement} advertised {overlap}"
+
+
+@pytest.mark.parametrize(
+    ("command", "capability"),
+    [
+        (HostCommand.LIST_TABS, BrowserCapability.MULTI_TAB),
+        (HostCommand.OPEN_TAB, BrowserCapability.MULTI_TAB),
+        (HostCommand.ACTIVATE_TAB, BrowserCapability.MULTI_TAB),
+        (HostCommand.CLOSE_TAB, BrowserCapability.MULTI_TAB),
+        (HostCommand.DOWNLOAD, BrowserCapability.DOWNLOADS),
+    ],
+)
+async def test_tab_and_download_commands_are_refused_by_capability_name(
+    tmp_path: Path, command: HostCommand, capability: BrowserCapability
+) -> None:
+    """The local session implements these; the host still does not dispatch them.
+
+    A backend being able to do something in-process is not the same claim as a
+    host being able to do it over the wire, and the two are advertised
+    separately. ``_Session`` above implements all five, so a refusal here can
+    only come from the dispatcher.
+    """
+    dispatcher = CommandDispatcher(
+        documents_dir=tmp_path,
+        capabilities=frozenset({BrowserCapability.MULTI_TAB.value, "downloads"}),
+    )
+    result = await dispatcher.execute(
+        HostSession(_Session(), "playwright"),
+        CommandMessage(command=command, session_id="s1", params={"tab_id": "tab-1"}),
+    )
+    assert result.ok is False
+    assert result.error_code is HostErrorCode.CAPABILITY_UNAVAILABLE
+    assert capability.value in (result.error_message or "")
+
+
+def test_a_backend_that_does_tabs_locally_still_does_not_advertise_them_remotely() -> None:
+    """Playwright gained MULTI_TAB and DOWNLOADS. The host must not inherit them."""
+    from applyuminati.core.settings import Settings
+    from applyuminati.plugins.browsers.playwright_backend import PlaywrightBackend
+
+    local = PlaywrightBackend(Settings()).metadata.capabilities
+    assert BrowserCapability.MULTI_TAB in local
+    assert BrowserCapability.DOWNLOADS in local
+
+    advertised = host_advertised_capabilities(local)
+    assert BrowserCapability.MULTI_TAB.value not in advertised
+    assert BrowserCapability.DOWNLOADS.value not in advertised
+    assert BrowserCapability.NAVIGATE.value in advertised
 
 
 async def test_consequential_click_is_deduplicated(tmp_path: Path) -> None:

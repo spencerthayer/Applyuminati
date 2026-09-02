@@ -28,6 +28,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, ConfigDict, Field
 
 from applyuminati.core.clock import utcnow
+from applyuminati.core.errors import ApplyuminatiError, FailureCategory
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.models.questionnaire import ApplicationQuestion
 from applyuminati.core.registry import HealthReport, PluginDescriptor, PluginMaturity, Registry
@@ -203,6 +204,96 @@ class ActionResult(BaseModel):
     duration_ms: float | None = None
 
 
+class BrowserTab(BaseModel):
+    """One tab inside a session, addressed by a backend-opaque id.
+
+    A value model rather than a handle, because tabs cross the Browser Host
+    boundary: a Playwright ``Page``, a CDP target or an ego lite node cannot be
+    serialised onto a WebSocket, and a caller that received one would be holding
+    a reference to an object in another process.
+
+    ``id`` is stable for the life of the tab within its session. It is not an
+    index into :meth:`BrowserSession.list_tabs`, because that ordering shifts
+    whenever a tab closes, and a caller holding a stale index would activate or
+    close the wrong page.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: Opaque, session-local, never reused. Only the backend may interpret it.
+    id: str
+    url: str
+    title: str | None = None
+    #: Whether page-scoped operations currently act on this tab.
+    active: bool = False
+
+
+class BrowserDownload(BaseModel):
+    """A file the site sent us, after it was persisted somewhere we allow.
+
+    Every path here is relative to the configured downloads directory. A
+    download is the one artefact in the system whose name is chosen by the
+    remote site, so the absolute location is deliberately absent: publishing it
+    would leak the host's filesystem layout through the Browser Host API, and
+    accepting it back would be a path-traversal primitive.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(default_factory=new_ulid)
+    #: The name actually written to disk, after sanitisation.
+    filename: str
+    #: Location under the downloads directory, POSIX-separated. Never absolute,
+    #: never containing ``..``.
+    relative_path: str
+    #: What the site asked to call the file, kept for provenance and never used
+    #: to build a path.
+    suggested_filename: str | None = None
+    #: Only set when the backend was told the type. Absent rather than guessed
+    #: from the extension, because a caller cannot tell a guess from a fact.
+    mime_type: str | None = None
+    size: int | None = None
+    source_url: str | None = None
+    downloaded_at: datetime = Field(default_factory=utcnow)
+
+
+class BrowserCapabilityError(ApplyuminatiError):
+    """The backend cannot perform this operation, and will not pretend to.
+
+    Raised only by the operations that must return a value, where there is no
+    result object to carry ``ok=False``: fabricating an empty tab list or a
+    zero-byte download would read as success. Operations returning
+    :class:`ActionResult` report the same condition as ``ok=False`` instead.
+    """
+
+    category = FailureCategory.BACKEND_UNAVAILABLE
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        capability: BrowserCapability,
+        backend: str | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code=f"browser.capability_unavailable.{capability.value}",
+            details={"capability": capability.value, "backend": backend},
+        )
+        self.capability = capability
+        self.backend = backend
+
+
+def session_closed_error(session_id: str) -> ApplyuminatiError:
+    """The error a value-returning operation raises on a closed session."""
+    return ApplyuminatiError(
+        "browser session is closed",
+        code="browser.session_closed",
+        category=FailureCategory.BACKEND_UNAVAILABLE,
+        details={"session_id": session_id},
+    )
+
+
 class BrowserCheckpoint(BaseModel):
     """Enough state to resume or audit an application attempt."""
 
@@ -290,6 +381,60 @@ class BrowserSession(Protocol):
 
     async def screenshot(self, *, relative_path: str) -> str:
         """Capture a screenshot; returns its data-dir-relative path."""
+        ...
+
+    # -- tabs -------------------------------------------------------------
+    #
+    # Every other page-scoped operation on this protocol acts on whichever tab
+    # is currently active, so activation is the only way a caller selects a
+    # target. There is deliberately no "run this on tab X" parameter: a
+    # per-call target would have to be threaded through the Browser Host
+    # protocol, and a command that named a tab the host had since closed would
+    # act on the wrong page rather than failing.
+
+    async def list_tabs(self) -> list[BrowserTab]:
+        """Every tab in this session, including ones the site opened itself.
+
+        Raises :class:`BrowserCapabilityError` when the backend does not
+        advertise :attr:`BrowserCapability.MULTI_TAB`.
+        """
+        ...
+
+    async def open_tab(self, url: str | None = None) -> BrowserTab:
+        """Open a tab and make it active, optionally navigating it.
+
+        Raises :class:`BrowserCapabilityError` when the backend does not
+        advertise :attr:`BrowserCapability.MULTI_TAB`.
+        """
+        ...
+
+    async def activate_tab(self, tab_id: str) -> ActionResult:
+        """Point page-scoped operations at ``tab_id``. Navigates nothing."""
+        ...
+
+    async def close_tab(self, tab_id: str) -> ActionResult:
+        """Close one tab, leaving the session usable.
+
+        Closing the active tab selects a replacement, so a session never points
+        at a page that is gone.
+        """
+        ...
+
+    # -- downloads --------------------------------------------------------
+
+    async def download(
+        self, locator: str, *, timeout_seconds: float | None = None
+    ) -> BrowserDownload:
+        """Activate ``locator`` and persist the file the site sends back.
+
+        A single operation rather than a click followed by a poll, because the
+        download begins during the click: a backend has to be listening before
+        the control is activated or the file is already gone.
+
+        Raises :class:`BrowserCapabilityError` when the backend does not
+        advertise :attr:`BrowserCapability.DOWNLOADS`, and an error coded
+        ``browser.no_download`` when the control produced no file.
+        """
         ...
 
     async def checkpoint(self) -> BrowserCheckpoint: ...
@@ -393,13 +538,17 @@ __all__ = [
     "ActionResult",
     "BrowserBackend",
     "BrowserCapability",
+    "BrowserCapabilityError",
     "BrowserCheckpoint",
+    "BrowserDownload",
     "BrowserMetadata",
     "BrowserSession",
+    "BrowserTab",
     "ControlOwner",
     "ElementRole",
     "PageCondition",
     "PageElement",
     "PageObservation",
     "browser_plugin",
+    "session_closed_error",
 ]

@@ -51,8 +51,11 @@ from typing import Any
 from applyuminati.browser.base import (
     ActionResult,
     BrowserCapability,
+    BrowserCapabilityError,
     BrowserCheckpoint,
+    BrowserDownload,
     BrowserMetadata,
+    BrowserTab,
     ControlOwner,
     ElementRole,
     PageCondition,
@@ -118,7 +121,16 @@ METADATA = BrowserMetadata(
             BrowserCapability.AUTHENTICATED_USER_PROFILE,
             BrowserCapability.HUMAN_HANDOFF,
             BrowserCapability.JAVASCRIPT_EVAL,
-            BrowserCapability.MULTI_TAB,
+            # MULTI_TAB is deliberately absent. `openOrReuseTab` opens a tab,
+            # but the harness exposes no way to enumerate tabs, address one by a
+            # stable id, or close a single tab, so three quarters of the tab
+            # contract cannot be honoured. Claiming the capability for the one
+            # quarter that works would let a caller select this backend for tab
+            # work and then discover the gap at `list_tabs`.
+            #
+            # DOWNLOADS is absent for the same reason: the helper writes files
+            # into the user's own browser download location, which is not a
+            # directory Applyuminati controls or may report as a relative path.
         }
     ),
     platforms=frozenset({"darwin"}),
@@ -823,6 +835,57 @@ return true;
         if envelope.get("ok") and relative_path not in self._artifacts:
             self._artifacts.append(relative_path)
         return relative_path
+
+    # -- tabs and downloads -----------------------------------------------
+    #
+    # Refused rather than approximated. The harness has `openOrReuseTab` and
+    # nothing else: no enumeration, no stable per-tab identity, no per-tab
+    # close. A `list_tabs` that returned the current page as the only tab would
+    # be a lie a caller cannot detect, and an `activate_tab` that did nothing
+    # would silently send the next fill to the wrong page. METADATA leaves
+    # MULTI_TAB and DOWNLOADS unclaimed so selection never routes tab work here
+    # in the first place; these methods are what a caller that asked anyway
+    # gets.
+
+    def _no_tabs(self) -> BrowserCapabilityError:
+        return BrowserCapabilityError(
+            "ego lite exposes no tab enumeration or per-tab addressing; "
+            "use the playwright backend for multi-tab work",
+            capability=BrowserCapability.MULTI_TAB,
+            backend=SLUG,
+        )
+
+    async def list_tabs(self) -> list[BrowserTab]:
+        raise self._no_tabs()
+
+    async def open_tab(self, url: str | None = None) -> BrowserTab:
+        raise self._no_tabs()
+
+    async def activate_tab(self, tab_id: str) -> ActionResult:
+        return ActionResult(
+            ok=False,
+            action="activate_tab",
+            detail="ego lite cannot address tabs individually",
+            condition=PageCondition.UNKNOWN,
+        )
+
+    async def close_tab(self, tab_id: str) -> ActionResult:
+        return ActionResult(
+            ok=False,
+            action="close_tab",
+            detail="ego lite cannot close a single tab",
+            condition=PageCondition.UNKNOWN,
+        )
+
+    async def download(
+        self, locator: str, *, timeout_seconds: float | None = None
+    ) -> BrowserDownload:
+        raise BrowserCapabilityError(
+            "ego lite downloads land in the user's own browser download folder, "
+            "which Applyuminati neither chooses nor may report a path inside",
+            capability=BrowserCapability.DOWNLOADS,
+            backend=SLUG,
+        )
 
     # -- handoff ----------------------------------------------------------
 

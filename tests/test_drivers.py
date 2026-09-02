@@ -9,7 +9,11 @@ from applyuminati.applications.detect import detect_ats, detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcomeKind, detect_driver
 from applyuminati.browser.base import (
     ActionResult,
+    BrowserCapability,
+    BrowserCapabilityError,
     BrowserCheckpoint,
+    BrowserDownload,
+    BrowserTab,
     ControlOwner,
     ElementRole,
     PageCondition,
@@ -97,6 +101,28 @@ class FakeSession:
 
     async def screenshot(self, *, relative_path: str) -> str:
         return relative_path
+
+    # Tabs and downloads refuse rather than no-op. These drivers never call
+    # them, and a fake that quietly returned an empty tab list would let a
+    # driver start depending on tabs without any test noticing the real
+    # single-tab backends cannot provide them.
+
+    async def list_tabs(self) -> list[BrowserTab]:
+        raise BrowserCapabilityError("fake", capability=BrowserCapability.MULTI_TAB)
+
+    async def open_tab(self, url: str | None = None) -> BrowserTab:
+        raise BrowserCapabilityError("fake", capability=BrowserCapability.MULTI_TAB)
+
+    async def activate_tab(self, tab_id: str) -> ActionResult:
+        return ActionResult(ok=False, action="activate_tab", detail="fake has one tab")
+
+    async def close_tab(self, tab_id: str) -> ActionResult:
+        return ActionResult(ok=False, action="close_tab", detail="fake has one tab")
+
+    async def download(
+        self, locator: str, *, timeout_seconds: float | None = None
+    ) -> BrowserDownload:
+        raise BrowserCapabilityError("fake", capability=BrowserCapability.DOWNLOADS)
 
     async def checkpoint(self) -> BrowserCheckpoint:
         return BrowserCheckpoint(session_id=self.session_id, url=self._url)

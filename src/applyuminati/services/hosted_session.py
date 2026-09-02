@@ -8,7 +8,11 @@ from time import monotonic
 
 from applyuminati.browser.base import (
     ActionResult,
+    BrowserCapability,
+    BrowserCapabilityError,
     BrowserCheckpoint,
+    BrowserDownload,
+    BrowserTab,
     ControlOwner,
     ElementRole,
     PageElement,
@@ -103,6 +107,44 @@ class HostedBrowserSession:
         payload = await self._send(HostCommand.SCREENSHOT, {"relative_path": relative_path})
         return str(payload.get("path", relative_path))
 
+    # -- tabs and downloads -----------------------------------------------
+    #
+    # Forwarded, not reimplemented. Whether they work is the host's answer, and
+    # today it is no: the host dispatcher refuses these four commands with
+    # CAPABILITY_UNAVAILABLE and strips MULTI_TAB and DOWNLOADS from what it
+    # advertises, so a driver never selects a host for tab work. These methods
+    # exist so the remote session satisfies the same protocol as a local one,
+    # and so enabling host dispatch later changes nothing on this side.
+
+    async def list_tabs(self) -> list[BrowserTab]:
+        payload = await self._capability_send(
+            HostCommand.LIST_TABS, {}, capability=BrowserCapability.MULTI_TAB
+        )
+        raw = payload.get("tabs")
+        return [BrowserTab.model_validate(tab) for tab in raw] if isinstance(raw, list) else []
+
+    async def open_tab(self, url: str | None = None) -> BrowserTab:
+        payload = await self._capability_send(
+            HostCommand.OPEN_TAB, {"url": url}, capability=BrowserCapability.MULTI_TAB
+        )
+        return BrowserTab.model_validate(payload)
+
+    async def activate_tab(self, tab_id: str) -> ActionResult:
+        return await self._action(HostCommand.ACTIVATE_TAB, {"tab_id": tab_id})
+
+    async def close_tab(self, tab_id: str) -> ActionResult:
+        return await self._action(HostCommand.CLOSE_TAB, {"tab_id": tab_id})
+
+    async def download(
+        self, locator: str, *, timeout_seconds: float | None = None
+    ) -> BrowserDownload:
+        payload = await self._capability_send(
+            HostCommand.DOWNLOAD,
+            {"locator": locator, "timeout_seconds": timeout_seconds},
+            capability=BrowserCapability.DOWNLOADS,
+        )
+        return BrowserDownload.model_validate(payload)
+
     async def checkpoint(self) -> BrowserCheckpoint:
         payload = await self._send(HostCommand.CHECKPOINT, {})
         return BrowserCheckpoint.model_validate(payload)
@@ -191,6 +233,29 @@ class HostedBrowserSession:
             )
         payload = result.result
         return payload if isinstance(payload, dict) else {}
+
+    async def _capability_send(
+        self,
+        command: HostCommand,
+        params: dict[str, object],
+        *,
+        capability: BrowserCapability,
+    ) -> dict[str, object]:
+        """Dispatch a command whose refusal means "this host cannot do that".
+
+        Translated to :class:`BrowserCapabilityError` so a caller handles one
+        exception type whether the session is local or remote. Every other host
+        error stays a :class:`HostCommandError`, because "the laptop is asleep"
+        and "this host has no tabs" call for different recovery.
+        """
+        try:
+            return await self._send(command, params)
+        except HostCommandError as exc:
+            if exc.error_code is HostErrorCode.CAPABILITY_UNAVAILABLE:
+                raise BrowserCapabilityError(
+                    exc.message, capability=capability, backend=self._host_id
+                ) from exc
+            raise
 
     async def _action(
         self,

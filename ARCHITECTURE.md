@@ -99,7 +99,9 @@ A hard loop guard prevents repeating a strategy already in `attempted_strategies
 
 ## Browser automation
 
-Ego Lite is the preferred backend (macOS, subprocess-driven, inherits the user's real logins). Playwright is the portable fallback. Both implement `BrowserBackend` / `BrowserSession` with semantic actions (navigate, observe, fill, upload, click, checkpoint, handoff).
+Ego Lite is the preferred backend (macOS, subprocess-driven, inherits the user's real logins). Playwright is the portable fallback. Both implement `BrowserBackend` / `BrowserSession` with semantic actions (navigate, observe, fill, upload, click, tabs, download, checkpoint, handoff).
+
+A backend owns the browser process; a session owns one isolated context and the tabs inside it. Closing a session closes its context and leaves every other session running. Backends advertise only the operations they actually implement — Ego Lite declines tabs and downloads — and a Browser Host advertises the narrower intersection of its backend's capabilities with what its dispatcher will carry out. Files a site sends are written under `<data_dir>/downloads` with a name derived from the site's suggestion rather than taken from it.
 
 **Never:** CAPTCHA solving, fingerprint spoofing, stealth techniques, or access-control evasion. When automation is blocked, the condition is detected and reported; the user is asked to take over.
 

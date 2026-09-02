@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Download</title>
+</head>
+<body>
+  <h1>Application copy</h1>
+  <button type="button" id="plain">Download the offer</button>
+  <!-- The name a hostile (or merely broken) site suggests. Chromium may scrub
+       some of this itself; the point of the test is that what lands on disk is
+       inside the downloads directory whether it does or not. -->
+  <button type="button" id="traversal">Download with a nasty name</button>
+  <script>
+    function send(filename) {
+      const blob = new Blob(['offer letter contents'], { type: 'text/plain' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+    }
+    document.getElementById('plain')
+      .addEventListener('click', () => send('offer letter.txt'));
+    document.getElementById('traversal')
+      .addEventListener('click', () => send('../../../../escaped.txt'));
+  </script>
+</body>
+</html>

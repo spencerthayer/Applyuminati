@@ -378,9 +378,21 @@ def test_playwright_earns_persistent_login_only_when_storage_state_is_configured
 async def test_playwright_handoff_refuses_rather_than_pretending(tmp_path) -> None:
     """It used to return ok=True, which is worse than having no handoff at all."""
     session = playwright_backend.PlaywrightSession(
-        page=None, browser=None, session_id="s", settings=_settings(tmp_path, [])
+        None, session_id="s", settings=_settings(tmp_path, [])
     )
     result = await session.request_human_control("sign in")
     assert not result.ok
     assert "cannot hand" in (result.detail or "")
     assert (await session.wait_for_control(timeout_seconds=1.0)).ok
+
+
+def test_playwright_claims_tabs_and_downloads_because_it_implements_them(tmp_path) -> None:
+    metadata = playwright_backend.PlaywrightBackend(_settings(tmp_path, [])).metadata
+    assert metadata.supports(BrowserCapability.MULTI_TAB)
+    assert metadata.supports(BrowserCapability.DOWNLOADS)
+
+
+def test_ego_lite_does_not_claim_tabs_it_cannot_address() -> None:
+    """`openOrReuseTab` is not tab support: nothing lists, selects or closes one."""
+    assert not ego_lite.METADATA.supports(BrowserCapability.MULTI_TAB)
+    assert not ego_lite.METADATA.supports(BrowserCapability.DOWNLOADS)

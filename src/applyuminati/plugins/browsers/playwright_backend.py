@@ -117,7 +117,7 @@ def _metadata(settings: Settings | None = None) -> BrowserMetadata:
     )
 
 
-def _launch_options(settings: Settings) -> dict[str, object]:
+def _launch_options(settings: Settings) -> dict[str, Any]:
     """Playwright ``chromium.launch`` kwargs derived from settings.
 
     Keys whose value would be ``None`` are omitted so callers do not depend on
@@ -1265,7 +1265,7 @@ class PlaywrightBackend(BrowserBackend):
             )
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                browser = await p.chromium.launch(**_launch_options(self._settings))
                 await browser.close()
             readable = bool(facts["persistence_readable"])
             if readable:
@@ -1281,6 +1281,15 @@ class PlaywrightBackend(BrowserBackend):
                 detail=(
                     "Chromium is installed and launchable; persisted login state is unreadable"
                 ),
+                facts=facts,
+            )
+        except BackendUnavailableError as exc:
+            # A launch option is misconfigured (missing custom executable); the
+            # backend itself may be installed and fine once reconfigured.
+            return HealthReport(
+                plugin="playwright",
+                state=HealthState.UNAVAILABLE,
+                detail=str(exc),
                 facts=facts,
             )
         except Exception as exc:

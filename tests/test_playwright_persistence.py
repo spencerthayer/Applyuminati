@@ -169,6 +169,32 @@ async def test_the_store_lock_lets_exactly_one_of_two_concurrent_commits_win(
     assert winner in {"a", "b"}
 
 
+async def test_separate_stores_on_one_path_cannot_both_publish_a_generation(
+    tmp_path: Path,
+) -> None:
+    """Two backends each build their own store; only a path-scoped lock saves us."""
+    configured = tmp_path / "playwright-state.json"
+    store_a = StorageStateStore(configured)
+    store_b = StorageStateStore(configured)
+    await store_a.commit(
+        FakeContext(_state_payload("seed")), loaded_generation=0, session_id="seed"
+    )
+    snapshot_a = await store_a.load()
+    snapshot_b = await store_b.load()
+    assert snapshot_a.generation == snapshot_b.generation == 1
+    context_a = FakeContext(_state_payload("a"), delay=0.05)
+    context_b = FakeContext(_state_payload("b"), delay=0.05)
+    results = await asyncio.gather(
+        store_a.commit(context_a, loaded_generation=snapshot_a.generation, session_id="a"),
+        store_b.commit(context_b, loaded_generation=snapshot_b.generation, session_id="b"),
+    )
+    assert results.count(True) == 1
+    assert results.count(False) == 1
+    assert store_a.status().generation == 2
+    assert store_b.status().generation == 2
+    assert _published_cookies(store_a)[0]["name"] in {"a", "b"}
+
+
 async def test_candidate_temp_paths_are_unique_and_not_generation_files(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.store_dir.mkdir()

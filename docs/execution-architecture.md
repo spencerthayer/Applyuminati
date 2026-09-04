@@ -492,6 +492,11 @@ directory of immutable `state-N.json` files behind an atomically replaced
 it may publish `generation + 1` only if the manifest still names that same
 generation. A stale session skips the write, logs
 `playwright.storage_state_stale_write_skipped`, and still closes normally.
+Generation checks, migration, and the state-plus-manifest publish serialise
+across every store instance and host process through a `flock` on a sibling
+`<configured-path>.lock` file, so two backends pointed at the same path cannot
+each read generation N and each publish generation N+1 (POSIX; elsewhere the
+serialisation is in-process only).
 Cookie merging is not attempted. A crash between writing the next state file
 and replacing the manifest leaves the previous generation authoritative and the
 unreferenced file an orphan, which the next successful commit replaces.

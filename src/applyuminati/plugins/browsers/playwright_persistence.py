@@ -18,7 +18,7 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, assert_never
@@ -27,6 +27,11 @@ from applyuminati.core.clock import utcnow
 from applyuminati.core.errors import ConfigurationError
 from applyuminati.core.ids import new_ulid
 from applyuminati.core.logging import get_logger
+
+try:
+    import fcntl
+except ModuleNotFoundError:  # pragma: no cover - cross-process locking is POSIX-only
+    fcntl = None  # type: ignore[assignment]
 
 log = get_logger(__name__)
 
@@ -194,13 +199,19 @@ def _manifest_invalid(filename: str, reason: str) -> ManifestProblem:
 
 
 class StorageStateStore:
-    """One configured path's generation store. Shared by every session on a backend."""
+    """One configured path's generation store. Shared by every session on a backend.
+
+    Load, migration, and commit serialise across every store object for the
+    same configured path, including across host processes, so two backends
+    cannot each publish the next generation.
+    """
 
     def __init__(self, configured: Path) -> None:
         self._configured = configured
         self.store_dir = configured.with_name(configured.name + ".d")
         self._manifest_path = self.store_dir / MANIFEST_NAME
         self._lock = asyncio.Lock()
+        self._lock_path = configured.with_name(configured.name + ".lock")
 
     def status(self) -> StorageStateStatus:
         """Never raises. Converts every persistence problem into a status value."""
@@ -228,7 +239,7 @@ class StorageStateStore:
                 assert_never(unreachable)
 
     async def load(self) -> StorageSnapshot:
-        async with self._lock:
+        async with self._lock, self._path_lock():
             return self._load_locked()
 
     async def commit(
@@ -238,12 +249,43 @@ class StorageStateStore:
         loaded_generation: int,
         session_id: str,
     ) -> bool:
-        async with self._lock:
+        async with self._lock, self._path_lock():
             return await self._commit_locked(
                 context,
                 loaded_generation=loaded_generation,
                 session_id=session_id,
             )
+
+    @contextlib.asynccontextmanager
+    async def _path_lock(self) -> AsyncIterator[None]:
+        """Serialise the read-generation, write-state, publish-manifest transaction.
+
+        The per-instance asyncio.Lock cannot see a second StorageStateStore
+        built for the same configured path, so two backend instances (or two
+        host processes) could each read generation N and each publish
+        generation N+1. A flock on a sibling ``<configured>.lock`` file scopes
+        the critical section to the persistence path instead of the Python
+        object. Acquire is non-blocking and retried on the event loop, so a
+        store waiting on another process never blocks the loop. Non-POSIX
+        hosts keep the in-process-only serialisation.
+        """
+        if fcntl is None:
+            yield
+            return
+        fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    await asyncio.sleep(0.01)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
     def _load_locked(self) -> StorageSnapshot:
         parsed = self._read_manifest()

@@ -185,6 +185,15 @@ def test_the_downloads_directory_is_separate_from_documents(tmp_path: Path) -> N
     assert settings.downloads_dir.is_dir()
 
 
+def test_a_custom_downloads_path_becomes_the_resolved_downloads_dir(tmp_path: Path) -> None:
+    custom = tmp_path / "inbox"
+    settings = Settings(data_dir=tmp_path / "data", environment="ci", downloads_path=custom)
+    settings.ensure_directories()
+    assert settings.downloads_dir == custom
+    assert custom.is_dir()
+    assert (tmp_path / "data" / "downloads").exists() is False
+
+
 def test_a_traversing_session_id_does_not_create_directories_outside_the_root(
     tmp_path: Path,
 ) -> None:

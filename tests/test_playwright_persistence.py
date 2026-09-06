@@ -89,6 +89,16 @@ async def test_first_run_creates_generation_one(tmp_path: Path) -> None:
     assert _published_cookies(store) == [{"name": "a", "value": "1"}]
 
 
+async def test_first_run_with_a_missing_parent_directory_still_loads(tmp_path: Path) -> None:
+    """The lock file must not be harder to create than the state itself."""
+    store = StorageStateStore(tmp_path / "cookies" / "state.json")
+    snapshot = await store.load()
+    assert snapshot.path is None
+    assert snapshot.generation == 0
+    await store.commit(FakeContext(_state_payload("a")), loaded_generation=0, session_id="s")
+    assert _published_cookies(store) == [{"name": "a", "value": "1"}]
+
+
 async def test_sequential_sessions_advance_the_generation(tmp_path: Path) -> None:
     store = _store(tmp_path)
     assert await store.commit(

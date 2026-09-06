@@ -272,6 +272,7 @@ class StorageStateStore:
         if fcntl is None:
             yield
             return
+        self._ensure_lock_parent()
         fd = os.open(self._lock_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             while True:
@@ -286,6 +287,14 @@ class StorageStateStore:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
+
+    def _ensure_lock_parent(self) -> None:
+        """The configured path may name a file in a directory that never existed."""
+        parent = self._lock_path.parent
+        if parent.is_dir():
+            return
+        parent.mkdir(parents=True, exist_ok=True)
+        _restrict_file_mode(parent, 0o700)
 
     def _load_locked(self) -> StorageSnapshot:
         parsed = self._read_manifest()

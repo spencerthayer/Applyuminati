@@ -28,6 +28,7 @@ from applyuminati.browser.base import (
 from applyuminati.core.errors import (
     ApplyuminatiError,
     BackendUnavailableError,
+    ConfigurationError,
     DuplicateActionError,
 )
 from applyuminati.core.settings import BrowserSettings, Settings
@@ -154,10 +155,27 @@ async def test_a_cookie_jar_that_does_not_exist_yet_is_not_loaded(tmp_path: Path
     """
     jar = tmp_path / "state.json"
     backend = PlaywrightBackend(_settings(tmp_path, playwright_storage_state=jar))
-    assert backend._storage_state_to_load() is None
+    assert backend._storage_store is not None
+    snapshot = await backend._storage_store.load()
+    assert snapshot.path is None
+    assert snapshot.generation == 0
 
-    jar.write_text('{"cookies": [], "origins": []}')
-    assert backend._storage_state_to_load() == str(jar)
+
+async def test_corrupt_configured_persistence_fails_closed_before_a_context_is_built(
+    tmp_path: Path,
+) -> None:
+    """Health may be degraded; a session still must not open a clean context."""
+    jar = tmp_path / "state.json"
+    jar.write_text("{not json")
+    backend = PlaywrightBackend(_settings(tmp_path, playwright_storage_state=jar))
+    facts = backend._persistence_facts()
+    assert facts["persistence_configured"] is True
+    assert facts["persistence_readable"] is False
+    with pytest.raises(ConfigurationError) as raised:
+        await backend.open_session()
+    assert raised.value.code == "browser.storage_state_invalid"
+    assert backend.browser_running is False
+    assert backend.live_session_ids == ()
 
 
 # ---------------------------------------------------------------------------
@@ -572,6 +590,32 @@ async def test_a_download_is_persisted_under_the_downloads_directory(
 
 
 @pytest.mark.browser
+async def test_a_custom_download_root_is_honored_and_stays_relative(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("playwright.async_api")
+    custom = tmp_path / "inbox"
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        environment="ci",
+        downloads_path=custom,
+        browser=BrowserSettings(navigation_timeout_seconds=15.0),
+    )
+    backend = PlaywrightBackend(settings)
+    try:
+        session = _playwright_session(await backend.open_session())
+        await session.navigate(_uri(DOWNLOAD_PAGE))
+        download = await session.download("#plain")
+        stored = settings.downloads_dir / download.relative_path
+        assert stored.is_file()
+        assert stored.is_relative_to(custom.resolve())
+        assert not Path(download.relative_path).is_absolute()
+        assert str(custom) not in download.relative_path
+    finally:
+        await backend.aclose()
+
+
+@pytest.mark.browser
 async def test_a_download_filename_cannot_escape_the_downloads_directory(
     tmp_path: Path,
 ) -> None:
@@ -756,9 +800,35 @@ async def test_a_checkpoint_names_storage_state_only_when_one_is_configured(
         dumped = checkpoint.model_dump_json()
         assert str(tmp_path / "state.json") not in dumped
 
-        # Closing writes the cookie jar, which is what earns PERSISTENT_LOGIN.
+        # Closing publishes generation 1. The configured filename is the
+        # store's identity, not the file Playwright writes.
         await session.close()
-        assert (tmp_path / "state.json").is_file()
+        assert backend._storage_store is not None
+        status = backend._storage_store.status()
+        assert status.state_exists is True
+        assert status.generation == 1
+        assert not (tmp_path / "state.json").exists()
         assert backend.browser_running is True
+    finally:
+        await backend.aclose()
+
+
+@pytest.mark.browser
+async def test_two_sessions_closing_together_leave_one_generation(
+    tmp_path: Path,
+) -> None:
+    """The store lock, not close-order luck, decides which cookie jar survives."""
+    pytest.importorskip("playwright.async_api")
+    jar = tmp_path / "state.json"
+    backend = PlaywrightBackend(_settings(tmp_path, playwright_storage_state=jar))
+    try:
+        first = _playwright_session(await backend.open_session(session_id="a"))
+        second = _playwright_session(await backend.open_session(session_id="b"))
+        await asyncio.gather(first.close(), second.close())
+        assert backend._storage_store is not None
+        status = backend._storage_store.status()
+        assert status.state_exists is True
+        assert status.generation == 1
+        assert status.readable is True
     finally:
         await backend.aclose()

@@ -402,7 +402,7 @@ PlaywrightBackend
         +-- BrowserContext <- PlaywrightSession B  [tab]
 ```
 
-`PlaywrightSession.close()` saves the cookie jar if one is configured, closes
+`PlaywrightSession.close()` asks the backend-owned storage store to commit, closes
 its own context, and stops. It never touches the browser. Only
 `PlaywrightBackend.aclose()` closes the browser, and it closes every context
 still open first so no session writes storage state through a dead connection.
@@ -454,7 +454,8 @@ no longer exists.
 ### 7.3 Downloads
 
 `BrowserDownload` carries a filename and a path relative to the configured
-downloads directory (`<data_dir>/downloads`), never an absolute one. The
+downloads directory (`<data_dir>/downloads` by default; override with
+`APPLYUMINATI_DOWNLOADS_PATH`), never an absolute one. The
 suggested filename is the only string in the browser contract chosen end to end
 by a remote employer portal, and it arrives shaped like a path, so it is treated
 as a label: the stored name is derived from it, cannot contain a separator or a
@@ -478,15 +479,43 @@ the whole of it. Open tabs, DOM state, in-page JavaScript, form values and the
 back/forward stack are gone, and the checkpoint records `restores: ["url"]` so
 nobody reads it as a saved browser. The configured storage-state *path* is not
 copied into the checkpoint: resume already reads it from current settings, and
-the host path does not belong in attempt state. This is why Playwright
-advertises `PERSISTENT_LOGIN` when a storage-state path is configured and never
-`PERSISTENT_SESSION`: an ego lite task space outlives the process, a Playwright
-context does not.
+the host path does not belong in attempt state. `PERSISTENT_LOGIN` means the
+backend is configured to preserve and restore authentication state between
+contexts and runs. It does not mean valid authenticated state already exists,
+which is why a configured path with no file yet still earns the capability and
+why Playwright never advertises `PERSISTENT_SESSION`: an ego lite task space
+outlives the process, a Playwright context does not.
 
-Concurrent sessions that share one storage-state file currently last-writer-wins
-on close. That is the present behaviour, not a guarantee that diverged cookies
-cannot clobber a newer login. Persistence and concurrency for that file belong
-to the next Playwright increment.
+Storage-state writes are generation-aware. The configured path names a store
+directory of immutable `state-N.json` files behind an atomically replaced
+`current.json` manifest. A session records the generation it loaded; on close
+it may publish `generation + 1` only if the manifest still names that same
+generation. A stale session skips the write, logs
+`playwright.storage_state_stale_write_skipped`, and still closes normally.
+Generation checks, migration, and the state-plus-manifest publish serialise
+across every store instance and host process through a `flock` on a sibling
+`<configured-path>.lock` file, so two backends pointed at the same path cannot
+each read generation N and each publish generation N+1 (POSIX; elsewhere the
+serialisation is in-process only).
+Cookie merging is not attempted. A crash between writing the next state file
+and replacing the manifest leaves the previous generation authoritative and the
+unreferenced file an orphan, which the next successful commit replaces.
+
+A storage-state file written by an earlier Playwright increment, with no
+manifest yet, is imported once as generation 1. After that the manifest is
+authoritative even if the original file is still on disk. The files hold live
+session cookies and are created `0600` on POSIX; treat them as credentials.
+
+A corrupt configured store fails closed: `open_session()` raises a named
+configuration error rather than opening a logged-out context. Health reports
+that as degraded Chromium, not as a missing browser.
+
+`channel` and `executable_path` select a Playwright-supported browser binary.
+They confer no user profile, no inherited Chrome logins, and no
+`AUTHENTICATED_USER_PROFILE`. `playwright_executable_path` is interpreted
+inside the process or container running Playwright; a macOS host path
+configured for a Linux container will not resolve. Proxy credentials belong in
+the dedicated username and password settings, not in the server URL.
 
 ### 7.5 A local capability is not a remote one
 

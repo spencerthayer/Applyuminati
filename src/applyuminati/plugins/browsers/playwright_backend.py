@@ -44,6 +44,7 @@ from applyuminati.core.ids import new_ulid
 from applyuminati.core.logging import get_logger
 from applyuminati.core.registry import HealthReport, HealthState, PluginMaturity
 from applyuminati.core.settings import Settings
+from applyuminati.plugins.browsers.playwright_persistence import StorageStateStore
 from applyuminati.plugins.browsers.shared import (
     MAX_TEXT_CHARS,
     detect_condition,
@@ -89,8 +90,13 @@ _CAPABILITIES = frozenset(
     }
 )
 
-#: Earned only when ``browser.playwright_storage_state`` is set, because that is
-#: the only configuration in which cookies are loaded and saved.
+#: Earned only when ``browser.playwright_storage_state`` is set.
+#:
+#: ``PERSISTENT_LOGIN`` means the backend is configured to preserve and restore
+#: authentication state between contexts and runs. It does not mean valid
+#: authenticated state already exists. A configured path with no file yet is
+#: still this capability: the first run establishes the jar. Runtime metadata
+#: does not inspect the persistence store.
 _STORAGE_CAPABILITIES = frozenset({BrowserCapability.PERSISTENT_LOGIN})
 
 
@@ -109,6 +115,38 @@ def _metadata(settings: Settings | None = None) -> BrowserMetadata:
             "at an authentication wall are not routed here."
         ),
     )
+
+
+def _launch_options(settings: Settings) -> dict[str, Any]:
+    """Playwright ``chromium.launch`` kwargs derived from settings.
+
+    Keys whose value would be ``None`` are omitted so callers do not depend on
+    Playwright treating explicit nulls the same as absent arguments. Proxy
+    credentials are unwrapped here and nowhere else.
+    """
+    browser = settings.browser
+    options: dict[str, object] = {"headless": browser.headless}
+    if browser.playwright_channel is not None:
+        options["channel"] = browser.playwright_channel
+    if browser.playwright_executable_path is not None:
+        path = browser.playwright_executable_path
+        if not path.is_file():
+            raise BackendUnavailableError(
+                f"playwright executable {path.name!r} is missing or not a file",
+                code="browser.playwright_binary_missing",
+                details={"filename": path.name},
+            )
+        options["executable_path"] = str(path)
+    if browser.playwright_proxy is not None:
+        proxy: dict[str, object] = {"server": browser.playwright_proxy.server}
+        if browser.playwright_proxy.username is not None:
+            proxy["username"] = browser.playwright_proxy.username.get_secret_value()
+        if browser.playwright_proxy.password is not None:
+            proxy["password"] = browser.playwright_proxy.password.get_secret_value()
+        if browser.playwright_proxy.bypass is not None:
+            proxy["bypass"] = browser.playwright_proxy.bypass
+        options["proxy"] = proxy
+    return options
 
 
 @dataclass(frozen=True, slots=True)
@@ -612,12 +650,16 @@ class PlaywrightSession(BrowserSession):
         session_id: str,
         settings: Settings,
         on_close: Callable[[PlaywrightSession], None] | None = None,
+        store: StorageStateStore | None = None,
+        loaded_storage_generation: int = 0,
     ) -> None:
         self._context = context
         self._session_id = session_id
         self._settings = settings
         self._owner = ControlOwner.AGENT
         self._on_close = on_close
+        self._store = store
+        self._loaded_storage_generation = loaded_storage_generation
         self._closed = False
         self._active_page: Any | None = None
         #: Page object to the id callers hold. Ids are handed out once and never
@@ -1134,25 +1176,24 @@ class PlaywrightSession(BrowserSession):
     async def _save_storage_state(self) -> None:
         """Persist cookies so the PERSISTENT_LOGIN claim is actually true.
 
-        The context was loading ``storage_state`` and never writing it, so a
-        login survived exactly as long as the process. The capability is now
-        advertised only when this path is configured, and it has to be earned.
-
-        Written from the context, before it closes. Concurrent sessions that
-        share one file currently last-writer-wins: whichever context closes
-        last overwrites the jar. That is the present behaviour, not a claim
-        that diverged cookies cannot clobber a newer login. Persistence and
-        concurrency semantics for this file belong to the next Playwright
-        increment, not here.
+        Delegates to the backend-owned :class:`StorageStateStore`. A stale
+        writer skips rather than clobbering a newer generation; that skip is a
+        persistence conflict, not a close failure.
         """
-        destination = self._settings.browser.playwright_storage_state
-        if destination is None or self._context is None:
+        if self._store is None or self._context is None:
             return
         try:
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            await self._context.storage_state(path=str(destination))
+            await self._store.commit(
+                self._context,
+                loaded_generation=self._loaded_storage_generation,
+                session_id=self._session_id,
+            )
         except Exception:
-            log.warning("playwright.storage_state_not_saved", path=str(destination))
+            log.warning(
+                "playwright.storage_state_not_saved",
+                session_id=self._session_id,
+                loaded_generation=self._loaded_storage_generation,
+            )
 
     async def _extract_controls(self) -> list[PageElement]:
         try:
@@ -1183,6 +1224,8 @@ class PlaywrightBackend(BrowserBackend):
         self._browser: Any | None = None
         self._sessions: dict[str, PlaywrightSession] = {}
         self._shutdown = False
+        path = settings.playwright_storage_state_path
+        self._storage_store = StorageStateStore(path) if path is not None else None
         #: Serialises the launch, so two sessions opening at once start one
         #: browser rather than two, of which one would be orphaned.
         self._launching = asyncio.Lock()
@@ -1207,6 +1250,7 @@ class PlaywrightBackend(BrowserBackend):
         return tuple(self._sessions)
 
     async def health(self) -> HealthReport:
+        facts = self._persistence_facts()
         try:
             from playwright.async_api import async_playwright
         except ImportError:
@@ -1217,22 +1261,63 @@ class PlaywrightBackend(BrowserBackend):
                     "playwright is not installed; run `uv sync --all-extras` "
                     "then `playwright install chromium`"
                 ),
+                facts=facts,
             )
         try:
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                browser = await p.chromium.launch(**_launch_options(self._settings))
                 await browser.close()
+            readable = bool(facts["persistence_readable"])
+            if readable:
+                return HealthReport(
+                    plugin="playwright",
+                    state=HealthState.HEALTHY,
+                    detail="Chromium is installed and launchable",
+                    facts=facts,
+                )
             return HealthReport(
                 plugin="playwright",
-                state=HealthState.HEALTHY,
-                detail="Chromium is installed and launchable",
+                state=HealthState.DEGRADED,
+                detail=(
+                    "Chromium is installed and launchable; persisted login state is unreadable"
+                ),
+                facts=facts,
+            )
+        except BackendUnavailableError as exc:
+            # A launch option is misconfigured (missing custom executable); the
+            # backend itself may be installed and fine once reconfigured.
+            return HealthReport(
+                plugin="playwright",
+                state=HealthState.UNAVAILABLE,
+                detail=str(exc),
+                facts=facts,
             )
         except Exception as exc:
             return HealthReport(
                 plugin="playwright",
                 state=HealthState.NOT_INSTALLED,
                 detail=f"Chromium not found; run `playwright install chromium`. Detail: {exc}",
+                facts=facts,
             )
+
+    def _persistence_facts(self) -> dict[str, object]:
+        facts: dict[str, object] = {
+            "persistence_configured": self._storage_store is not None,
+            "persistence_state_exists": False,
+            "persistence_readable": True,
+            "persistence_generation": 0,
+            "proxy_configured": self._settings.browser.playwright_proxy is not None,
+            "channel_configured": self._settings.browser.playwright_channel is not None,
+            "custom_executable_configured": (
+                self._settings.browser.playwright_executable_path is not None
+            ),
+        }
+        if self._storage_store is not None:
+            status = self._storage_store.status()
+            facts["persistence_state_exists"] = status.state_exists
+            facts["persistence_readable"] = status.readable
+            facts["persistence_generation"] = status.generation
+        return facts
 
     async def open_session(
         self,
@@ -1271,14 +1356,26 @@ class PlaywrightBackend(BrowserBackend):
                     details={"session_id": sid, "backend": "playwright"},
                 )
 
+            snapshot_path: str | None = None
+            loaded_generation = 0
+            if self._storage_store is not None:
+                snapshot = await self._storage_store.load()
+                snapshot_path = str(snapshot.path) if snapshot.path is not None else None
+                loaded_generation = snapshot.generation
+
             browser = await self._ensure_browser()
-            context = await browser.new_context(storage_state=self._storage_state_to_load())
+            context_kwargs: dict[str, object] = {}
+            if snapshot_path is not None:
+                context_kwargs["storage_state"] = snapshot_path
+            context = await browser.new_context(**context_kwargs)
             await context.new_page()
             session = PlaywrightSession(
                 context,
                 session_id=sid,
                 settings=self._settings,
                 on_close=self._forget,
+                store=self._storage_store,
+                loaded_storage_generation=loaded_generation,
             )
             self._sessions[sid] = session
         if resume is not None and resume.url:
@@ -1313,20 +1410,6 @@ class PlaywrightBackend(BrowserBackend):
                 raise self._closed_error()
             return session
 
-    def _storage_state_to_load(self) -> str | None:
-        """The cookie jar to seed a context with, if there is one to read yet.
-
-        Playwright raises ``FileNotFoundError`` for a ``storage_state`` path that
-        does not exist, so configuring the setting used to make the *first*
-        session fail outright: nothing writes the file until a session closes,
-        and no session could open to write it. Absent means "no cookies yet",
-        which is the honest starting state rather than an error.
-        """
-        configured = self._settings.browser.playwright_storage_state
-        if configured is None or not configured.is_file():
-            return None
-        return str(configured)
-
     def _forget(self, session: PlaywrightSession) -> None:
         """Drop a session from the registry, if it is still the one registered.
 
@@ -1360,7 +1443,7 @@ class PlaywrightBackend(BrowserBackend):
                 self._playwright = await async_playwright().start()
             if self._browser is None:
                 self._browser = await self._playwright.chromium.launch(
-                    headless=self._settings.browser.headless
+                    **_launch_options(self._settings)
                 )
             return self._browser
 

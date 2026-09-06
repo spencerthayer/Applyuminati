@@ -373,6 +373,22 @@ def test_playwright_earns_persistent_login_only_when_storage_state_is_configured
     )
     with_state = playwright_backend.PlaywrightBackend(configured).metadata
     assert with_state.supports(BrowserCapability.PERSISTENT_LOGIN)
+    # Configured, not "file exists": first run still advertises the capability.
+    assert not (tmp_path / "state.json").exists()
+
+
+async def test_playwright_health_probes_the_configured_launch_options(tmp_path) -> None:
+    """A launch configuration real sessions cannot use must not report HEALTHY."""
+    pytest.importorskip("playwright.async_api")
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        environment="ci",
+        browser=BrowserSettings(playwright_executable_path=tmp_path / "absent-chrome"),
+    )
+    report = await playwright_backend.PlaywrightBackend(settings).health()
+    assert report.state is HealthState.UNAVAILABLE
+    assert "absent-chrome" in report.detail
+    assert report.facts["custom_executable_configured"] is True
 
 
 async def test_playwright_handoff_refuses_rather_than_pretending(tmp_path) -> None:

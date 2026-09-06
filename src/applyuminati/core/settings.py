@@ -20,8 +20,9 @@ from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Self
+from urllib.parse import urlparse
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -99,6 +100,37 @@ class LLMSettings(BaseModel):
         return enabled[0] if len(enabled) == 1 else None
 
 
+class PlaywrightProxySettings(BaseModel):
+    """Playwright launch proxy. Credentials stay out of the server URL."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    server: str
+    username: SecretStr | None = None
+    password: SecretStr | None = None
+    bypass: str | None = None
+
+    @field_validator("server")
+    @classmethod
+    def _server_shape(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            msg = "proxy server must be a nonblank URL"
+            raise ValueError(msg)
+        parsed = urlparse(stripped)
+        if parsed.scheme not in {"http", "https", "socks5"} or not parsed.hostname:
+            msg = (
+                "proxy server must be an http, https, or socks5 URL of the form "
+                "scheme://host[:port]; Playwright documents HTTP(S) and SOCKSv5 "
+                "proxy support"
+            )
+            raise ValueError(msg)
+        if parsed.username is not None or parsed.password is not None:
+            msg = "proxy credentials belong in username and password, not in the server URL"
+            raise ValueError(msg)
+        return stripped
+
+
 class BrowserSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -115,10 +147,44 @@ class BrowserSettings(BaseModel):
     #: helper packs from. Defaults to ``<data_dir>/ego-workspace``.
     ego_lite_workspace: Path | None = None
     #: Persisted Playwright ``storage_state`` file, so logins survive runs.
+    #: Relative paths resolve against :attr:`Settings.data_dir` via
+    #: :attr:`Settings.playwright_storage_state_path`.
     playwright_storage_state: Path | None = None
+    playwright_proxy: PlaywrightProxySettings | None = None
+    playwright_channel: str | None = None
+    playwright_executable_path: Path | None = None
     navigation_timeout_seconds: float = 45.0
     #: Screenshots and DOM captures written per application attempt.
     capture_artifacts: bool = True
+
+    @field_validator("playwright_channel")
+    @classmethod
+    def _nonblank_channel(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        if not stripped:
+            msg = "playwright_channel cannot be empty"
+            raise ValueError(msg)
+        return stripped
+
+    @field_validator("playwright_executable_path")
+    @classmethod
+    def _absolute_executable(cls, value: Path | None) -> Path | None:
+        if value is None:
+            return None
+        path = value.expanduser()
+        if not path.is_absolute():
+            msg = "playwright_executable_path must be an absolute path"
+            raise ValueError(msg)
+        return path
+
+    @model_validator(mode="after")
+    def _channel_xor_executable(self) -> Self:
+        if self.playwright_channel is not None and self.playwright_executable_path is not None:
+            msg = "Configure either playwright_channel or playwright_executable_path, not both."
+            raise ValueError(msg)
+        return self
 
 
 class AgentSettings(BaseModel):
@@ -271,6 +337,9 @@ class Settings(BaseSettings):
 
     #: Everything local lives here: SQLite file, artifacts, config.toml, logs.
     data_dir: Path = DEFAULT_DATA_DIR
+    #: Optional override for :attr:`downloads_dir`. Relative paths resolve
+    #: against :attr:`data_dir`. Unset keeps the default ``<data_dir>/downloads``.
+    downloads_path: Path | None = None
     #: Overrides the derived SQLite URL. Keep the dialect SQLAlchemy-supported:
     #: swapping in ``postgresql+psycopg://`` later must not require domain changes.
     database_url: str | None = None
@@ -375,7 +444,24 @@ class Settings(BaseSettings):
         took. A download is named and filled by a remote employer portal, so it
         gets its own directory that nothing else reads back by default.
         """
-        return self.data_dir / "downloads"
+        if self.downloads_path is None:
+            return self.data_dir / "downloads"
+        path = self.downloads_path.expanduser()
+        return path if path.is_absolute() else self.data_dir / path
+
+    @property
+    def playwright_storage_state_path(self) -> Path | None:
+        """Resolved Playwright storage-state path, independent of process CWD.
+
+        Relative configured values join :attr:`data_dir`. Absolute values and
+        ``~`` expansions are used as-is. Store and session code consume this,
+        never the raw :attr:`BrowserSettings.playwright_storage_state`.
+        """
+        configured = self.browser.playwright_storage_state
+        if configured is None:
+            return None
+        path = configured.expanduser()
+        return path if path.is_absolute() else self.data_dir / path
 
     @property
     def config_path(self) -> Path:
@@ -390,9 +476,23 @@ class Settings(BaseSettings):
 
     def public_dict(self) -> dict[str, Any]:
         """Settings safe to return from the API: secrets replaced by a flag."""
-        payload = self.model_dump(mode="json", exclude={"llm", "email", "security"})
+        payload = self.model_dump(
+            mode="json",
+            exclude={"llm", "email", "security", "browser", "downloads_path"},
+        )
         # Explicitly rebuilt rather than dumped: SecretStr already masks itself,
         # but an added field must not become public by default.
+        payload["browser"] = {
+            "preferred": list(self.browser.preferred),
+            "headless": self.browser.headless,
+            "navigation_timeout_seconds": self.browser.navigation_timeout_seconds,
+            "capture_artifacts": self.browser.capture_artifacts,
+            "persistent_login_configured": self.browser.playwright_storage_state is not None,
+            "proxy_configured": self.browser.playwright_proxy is not None,
+            "channel": self.browser.playwright_channel,
+            "custom_executable_configured": self.browser.playwright_executable_path is not None,
+            "ego_lite_binary_configured": self.browser.ego_lite_binary is not None,
+        }
         payload["security"] = {
             "enabled": self.security.enabled,
             "configured": self.security.configured,
@@ -500,6 +600,7 @@ __all__ = [
     "ExecutionMode",
     "LLMSettings",
     "LogFormat",
+    "PlaywrightProxySettings",
     "ProviderConfig",
     "SecuritySettings",
     "ServerSettings",

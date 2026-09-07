@@ -36,6 +36,7 @@ from applyuminati.core.registry import HealthReport
 __all__ = [
     "APPLICATION_SUBMISSION",
     "AUTHENTICATED_APPLICATION",
+    "PUBLIC_FORM_APPLICATION",
     "READ_ONLY_INSPECTION",
     "BackendCandidate",
     "BrowserRequirements",
@@ -134,6 +135,28 @@ APPLICATION_SUBMISSION = BrowserRequirements(
         {
             BrowserCapability.AUTHENTICATED_USER_PROFILE,
             BrowserCapability.PERSISTENT_SESSION,
+            BrowserCapability.SCREENSHOT,
+        }
+    ),
+)
+
+#: A public application form: no account, no login wall, resume attached to the
+#: form itself. Handoff is *preferred*, not required: Playwright is a valid
+#: backend here, and pretending otherwise would route every public form through
+#: a human-able browser that the machine may not have. When a challenge does
+#: appear, the attempt pauses for a person like any other intervention; the
+#: requirement does not claim Playwright can hand it the browser.
+PUBLIC_FORM_APPLICATION = BrowserRequirements(
+    required=frozenset(
+        {
+            BrowserCapability.NAVIGATE,
+            BrowserCapability.SEMANTIC_SNAPSHOT,
+            BrowserCapability.FILE_UPLOAD,
+        }
+    ),
+    preferred=frozenset(
+        {
+            BrowserCapability.HUMAN_HANDOFF,
             BrowserCapability.SCREENSHOT,
         }
     ),

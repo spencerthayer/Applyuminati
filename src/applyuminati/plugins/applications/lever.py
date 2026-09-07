@@ -17,6 +17,7 @@ from applyuminati.applications.driver import (
 )
 from applyuminati.applications.runner import run_form_application
 from applyuminati.browser.base import BrowserSession, ElementRole, PageElement
+from applyuminati.browser.capabilities import PUBLIC_FORM_APPLICATION
 from applyuminati.core.models.execution import ApplicationAttempt
 from applyuminati.core.models.job import AtsVendor
 from applyuminati.core.registry import PluginMaturity
@@ -28,6 +29,7 @@ METADATA = DriverMetadata(
     slug=SLUG,
     name="Lever",
     ats=AtsVendor.LEVER,
+    requirements=PUBLIC_FORM_APPLICATION,
     version=VERSION,
     hosts=frozenset({"jobs.lever.co", "lever.co"}),
 )

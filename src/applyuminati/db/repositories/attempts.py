@@ -44,6 +44,7 @@ def _to_record(row: ApplicationAttemptRow) -> ApplicationAttempt:
             "events": payload.get("events", []),
             "evidence": payload.get("evidence", {}),
             "observations": payload.get("observations", []),
+            "browser_requirements": payload.get("browser_requirements"),
         }
     )
 
@@ -59,6 +60,7 @@ def _payload(record: ApplicationAttempt) -> dict:
         "events": [item.model_dump(mode="json") for item in record.events],
         "evidence": record.evidence.model_dump(mode="json"),
         "observations": list(record.observations),
+        "browser_requirements": record.browser_requirements,
     }
 
 

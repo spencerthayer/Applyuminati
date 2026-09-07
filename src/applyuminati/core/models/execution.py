@@ -135,6 +135,7 @@ class AttemptEventKind(StrEnum):
     CONTROL_KEPT = "control_kept"
     FAILURE = "failure"
     RESUMED = "resumed"
+    BROWSER_SELECTED = "browser_selected"
     SUBMITTED = "submitted"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
@@ -279,6 +280,10 @@ class ApplicationAttempt(BaseModel):
 
     browser_host_id: str | None = None
     browser_backend: str | None = None
+    #: Capability contract in force when selection chose a backend:
+    #: ``{"required": [...], "preferred": [...]}``. Recorded so diagnostics and
+    #: later runs know what the selection decision was made against.
+    browser_requirements: dict[str, list[str]] | None = None
     browser_session_id: str | None = None
     #: ego lite name (``applyuminati:<attempt id>``) and, once learned, numeric id.
     task_space_id: str | None = None

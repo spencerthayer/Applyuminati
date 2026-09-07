@@ -27,6 +27,7 @@ from applyuminati.core.models.job import Job
 from applyuminati.core.models.profile import CareerProfile
 from applyuminati.services.attempt_service import APPLICATION_ATTEMPT_KIND, AttemptService
 from applyuminati.services.container import Repositories, get_container
+from applyuminati.services.local_browser import LocalBrowserManager
 from applyuminati.tasks.handlers import HANDLER_REGISTRY, TaskContext, register_handler
 from applyuminati.tasks.queue import TaskQueue
 from applyuminati.tasks.worker import TaskWorker
@@ -96,7 +97,26 @@ async def _run(
     manager = get_container().browser_hosts
     session = await service.bind_session(attempt, manager=manager, session_factory=session_factory)
     if session is None:
-        return await _select_or_pause(attempt, job, driver, repos)
+        selected = await _select_or_pause(attempt, job, driver, repos)
+        if selected.get("selected_backend") is None:
+            return selected
+        try:
+            session = await _local_manager().acquire(attempt)
+        except BackendUnavailableError as exc:
+            # Belt and braces: selection already checked the contract, so this
+            # refuses rather than substitutes or crashes the task loop.
+            snapshot = attempt.browser_requirements or {}
+            needs_handoff = BrowserCapability.HUMAN_HANDOFF.value in snapshot.get("required", [])
+            attempt.open_intervention(
+                InterventionReason.USER_REVIEW,
+                f"The selected browser cannot run this application: {exc}",
+                requires_browser_handoff=needs_handoff,
+            )
+            attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN
+            await repos.attempts.save(attempt)
+            return {"status": attempt.workflow_state.value, "attempt_id": attempt.id}
+        attempt.browser_session_id = attempt.id
+        await repos.attempts.save(attempt)
     driver_context = DriverContext(job=job, profile=profile, mode=attempt.submission_mode)
     updated = await service.run_step(attempt, session, driver_context, driver=driver)
     context.logger.info(
@@ -104,7 +124,20 @@ async def _run(
         attempt_id=updated.id,
         workflow_state=updated.workflow_state.value,
     )
-    return {"status": updated.workflow_state.value, "attempt_id": updated.id}
+    result = {"status": updated.workflow_state.value, "attempt_id": updated.id}
+    if attempt.browser_backend:
+        result["selected_backend"] = attempt.browser_backend
+    return result
+
+
+def _local_manager() -> LocalBrowserManager:
+    """The process-owned local browser manager for the application worker."""
+    container = get_container()
+    manager = getattr(container, "local_browsers", None)
+    if manager is None:
+        manager = LocalBrowserManager(container.settings)
+        container.local_browsers = manager  # type: ignore[attr-defined]
+    return manager
 
 
 async def _select_or_pause(

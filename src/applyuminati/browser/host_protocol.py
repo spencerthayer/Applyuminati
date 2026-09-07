@@ -161,13 +161,15 @@ class HostCommand(StrEnum):
 #: ``idempotency_key``.
 #:
 #: ``CLICK`` is here because the final submit button is a click, and a click
-#: replayed after a reconnect is how an application gets submitted twice. Erring
-#: toward treating clicks as consequential costs a dictionary lookup; erring the
-#: other way costs a duplicate application to an employer.
+#: replayed after a reconnect is how an application gets submitted twice.
+#: ``DOWNLOAD`` clicks too, so it rides under the same rule. Erring toward
+#: treating clicks as consequential costs a dictionary lookup; erring the other
+#: way costs a duplicate application to an employer.
 CONSEQUENTIAL_COMMANDS: frozenset[HostCommand] = frozenset(
     {
         HostCommand.CLICK,
         HostCommand.UPLOAD,
+        HostCommand.DOWNLOAD,
         HostCommand.CREATE_SESSION,
     }
 )

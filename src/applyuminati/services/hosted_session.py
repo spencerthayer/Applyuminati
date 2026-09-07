@@ -109,12 +109,9 @@ class HostedBrowserSession:
 
     # -- tabs and downloads -----------------------------------------------
     #
-    # Forwarded, not reimplemented. Whether they work is the host's answer, and
-    # today it is no: the host dispatcher refuses these four commands with
-    # CAPABILITY_UNAVAILABLE and strips MULTI_TAB and DOWNLOADS from what it
-    # advertises, so a driver never selects a host for tab work. These methods
-    # exist so the remote session satisfies the same protocol as a local one,
-    # and so enabling host dispatch later changes nothing on this side.
+    # Forwarded, not reimplemented. Whether they work is the host's answer:
+    # a refusal means "this host cannot do that" and arrives as
+    # BrowserCapabilityError, the same shape a local incapable session raises.
 
     async def list_tabs(self) -> list[BrowserTab]:
         payload = await self._capability_send(
@@ -136,12 +133,19 @@ class HostedBrowserSession:
         return await self._action(HostCommand.CLOSE_TAB, {"tab_id": tab_id})
 
     async def download(
-        self, locator: str, *, timeout_seconds: float | None = None
+        self,
+        locator: str,
+        *,
+        timeout_seconds: float | None = None,
+        idempotency_key: str | None = None,
     ) -> BrowserDownload:
+        # Download clicks a locator, so it is consequential: the key lets the
+        # host deduplicate a replayed click after a reconnect.
         payload = await self._capability_send(
             HostCommand.DOWNLOAD,
             {"locator": locator, "timeout_seconds": timeout_seconds},
             capability=BrowserCapability.DOWNLOADS,
+            idempotency_key=idempotency_key,
         )
         return BrowserDownload.model_validate(payload)
 
@@ -240,6 +244,7 @@ class HostedBrowserSession:
         params: dict[str, object],
         *,
         capability: BrowserCapability,
+        idempotency_key: str | None = None,
     ) -> dict[str, object]:
         """Dispatch a command whose refusal means "this host cannot do that".
 
@@ -249,7 +254,7 @@ class HostedBrowserSession:
         and "this host has no tabs" call for different recovery.
         """
         try:
-            return await self._send(command, params)
+            return await self._send(command, params, idempotency_key=idempotency_key)
         except HostCommandError as exc:
             if exc.error_code is HostErrorCode.CAPABILITY_UNAVAILABLE:
                 raise BrowserCapabilityError(

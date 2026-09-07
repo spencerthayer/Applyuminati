@@ -72,6 +72,7 @@ class DriverMetadata:
     #: driver that does not state its requirements cannot be selected for.
     requirements: BrowserRequirements
     version: str = "1"
+    #: Host suffixes this driver claims. Detection uses these before a page load.
     hosts: frozenset[str] = field(default_factory=frozenset)
 
 

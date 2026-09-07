@@ -784,7 +784,13 @@ async def test_a_handoff_contract_pauses_with_the_handoff_intervention(database)
         intervention = loaded.pending_intervention
         assert intervention is not None
         assert intervention.requires_browser_handoff is True
-        assert "Connect the Browser Host" in intervention.instruction
+        # The rejection reasons must survive into the instruction: selection
+        # deliberately reports every candidate, and the human reading the
+        # intervention is the one who can act on them.
+        assert "no browser backend satisfies required: human_handoff, navigate" in (
+            intervention.instruction
+        )
+        assert "Connect a compatible Browser Host" in intervention.instruction
 
 
 async def test_a_bound_attempt_is_never_reselected(database) -> None:

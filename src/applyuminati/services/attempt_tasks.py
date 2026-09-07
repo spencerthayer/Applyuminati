@@ -143,15 +143,14 @@ async def _select_or_pause(
     try:
         backend, _health = await select_browser(get_container().settings, requirements)
     except BackendUnavailableError as exc:
-        instruction = (
-            (
-                "This application needs a browser a person can join "
-                f"({requirements.describe()}). Connect the Browser Host on your "
-                "Mac, then choose Done, continue."
+        if needs_handoff:
+            instruction = (
+                "This application requires browser handoff, but no available "
+                f"browser satisfies its contract. {exc} "
+                "Connect a compatible Browser Host, then choose Done, continue."
             )
-            if needs_handoff
-            else f"This application cannot start: {exc}"
-        )
+        else:
+            instruction = f"The application cannot start: {exc}"
         attempt.open_intervention(
             InterventionReason.USER_REVIEW,
             instruction,

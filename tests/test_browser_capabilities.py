@@ -21,6 +21,7 @@ from applyuminati.browser.base import (
 from applyuminati.browser.capabilities import (
     APPLICATION_SUBMISSION,
     AUTHENTICATED_APPLICATION,
+    PUBLIC_FORM_APPLICATION,
     READ_ONLY_INSPECTION,
     BrowserRequirements,
     capability_matrix,
@@ -375,6 +376,28 @@ def test_playwright_earns_persistent_login_only_when_storage_state_is_configured
     assert with_state.supports(BrowserCapability.PERSISTENT_LOGIN)
     # Configured, not "file exists": first run still advertises the capability.
     assert not (tmp_path / "state.json").exists()
+
+
+def test_public_form_application_prefers_handoff_without_requiring_it() -> None:
+    assert PUBLIC_FORM_APPLICATION.required == frozenset(
+        {
+            BrowserCapability.NAVIGATE,
+            BrowserCapability.SEMANTIC_SNAPSHOT,
+            BrowserCapability.FILE_UPLOAD,
+        }
+    )
+    assert PUBLIC_FORM_APPLICATION.preferred == frozenset(
+        {BrowserCapability.HUMAN_HANDOFF, BrowserCapability.SCREENSHOT}
+    )
+
+
+async def test_public_form_application_admits_a_backend_that_cannot_hand_off(tmp_path) -> None:
+    """The whole point: a public Greenhouse/Lever form may run on Playwright."""
+    register("iso", ISOLATED)
+    backend, _ = await select_browser(_settings(tmp_path, ["iso"]), PUBLIC_FORM_APPLICATION)
+    assert backend.metadata.slug == "iso"
+    with pytest.raises(BackendUnavailableError):
+        await select_browser(_settings(tmp_path, ["iso"]), APPLICATION_SUBMISSION)
 
 
 async def test_playwright_health_probes_the_configured_launch_options(tmp_path) -> None:

@@ -12,11 +12,18 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from applyuminati.applications.driver import ApplicationDriver, DriverContext
-from applyuminati.browser.base import BrowserSession
-from applyuminati.core.errors import NotFoundError
+from applyuminati.applications.driver import ApplicationDriver, DriverContext, detect_driver
+from applyuminati.browser.base import BrowserCapability, BrowserSession
+from applyuminati.browser.selection import select_browser
+from applyuminati.core.errors import BackendUnavailableError, NotFoundError
 from applyuminati.core.logging import get_logger
-from applyuminati.core.models.execution import ApplicationAttempt, InterventionReason, WorkflowState
+from applyuminati.core.models.execution import (
+    ApplicationAttempt,
+    AttemptEventKind,
+    InterventionReason,
+    WorkflowState,
+)
+from applyuminati.core.models.job import Job
 from applyuminati.core.models.profile import CareerProfile
 from applyuminati.services.attempt_service import APPLICATION_ATTEMPT_KIND, AttemptService
 from applyuminati.services.container import Repositories, get_container
@@ -89,16 +96,7 @@ async def _run(
     manager = get_container().browser_hosts
     session = await service.bind_session(attempt, manager=manager, session_factory=session_factory)
     if session is None:
-        attempt.open_intervention(
-            InterventionReason.USER_REVIEW,
-            (
-                "The Browser Host is not connected or the session is gone. "
-                "Connect the Mac host, then choose Done, continue."
-            ),
-            requires_browser_handoff=True,
-        )
-        await repos.attempts.save(attempt)
-        return {"status": WorkflowState.WAITING_FOR_HUMAN.value, "attempt_id": attempt.id}
+        return await _select_or_pause(attempt, job, driver, repos)
     driver_context = DriverContext(job=job, profile=profile, mode=attempt.submission_mode)
     updated = await service.run_step(attempt, session, driver_context, driver=driver)
     context.logger.info(
@@ -107,6 +105,85 @@ async def _run(
         workflow_state=updated.workflow_state.value,
     )
     return {"status": updated.workflow_state.value, "attempt_id": updated.id}
+
+
+async def _select_or_pause(
+    attempt: ApplicationAttempt,
+    job: Job,
+    driver: ApplicationDriver | None,
+    repos: Repositories,
+) -> dict[str, Any]:
+    """Decide execution for an attempt no session could be bound to.
+
+    A bound attempt never reaches this: durable resume identity wins over
+    selection, and ``bind_session`` already re-enters the exact host session.
+    For an unbound attempt the apply URL's driver states its browser contract
+    and ``select_browser`` turns it into a decision. PR #9 persists that
+    decision and stops; PR #10 supplies the local session acquisition that
+    acts on it.
+    """
+    if driver is None:
+        matched = detect_driver(job.apply_url or job.canonical_url)
+        if matched is None:
+            attempt.open_intervention(
+                InterventionReason.USER_REVIEW,
+                (
+                    "No application driver matches the apply URL for this job, "
+                    "so the attempt cannot be driven. Review the job or apply "
+                    "manually."
+                ),
+                requires_browser_handoff=False,
+            )
+            attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN
+            await repos.attempts.save(attempt)
+            return {"status": attempt.workflow_state.value, "attempt_id": attempt.id}
+        driver = matched[0]
+    requirements = driver.metadata.requirements
+    needs_handoff = BrowserCapability.HUMAN_HANDOFF in requirements.required
+    try:
+        backend, _health = await select_browser(get_container().settings, requirements)
+    except BackendUnavailableError as exc:
+        instruction = (
+            (
+                "This application needs a browser a person can join "
+                f"({requirements.describe()}). Connect the Browser Host on your "
+                "Mac, then choose Done, continue."
+            )
+            if needs_handoff
+            else f"This application cannot start: {exc}"
+        )
+        attempt.open_intervention(
+            InterventionReason.USER_REVIEW,
+            instruction,
+            requires_browser_handoff=needs_handoff,
+        )
+        attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN
+        await repos.attempts.save(attempt)
+        return {"status": attempt.workflow_state.value, "attempt_id": attempt.id}
+    snapshot = {
+        "required": sorted(cap.value for cap in requirements.required),
+        "preferred": sorted(cap.value for cap in requirements.preferred),
+    }
+    attempt.browser_backend = backend.metadata.slug
+    attempt.browser_requirements = snapshot
+    attempt.record_event(
+        AttemptEventKind.BROWSER_SELECTED,
+        "capability selection chose the backend for this attempt",
+        backend=attempt.browser_backend,
+        requirements=snapshot,
+    )
+    await repos.attempts.save(attempt)
+    log.info(
+        "attempt.browser_selected",
+        attempt_id=attempt.id,
+        backend=attempt.browser_backend,
+        requirements=requirements.describe(),
+    )
+    return {
+        "status": attempt.workflow_state.value,
+        "attempt_id": attempt.id,
+        "selected_backend": attempt.browser_backend,
+    }
 
 
 def register_attempt_handlers() -> None:

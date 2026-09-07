@@ -4,19 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
 
 from applyuminati.applications.detect import detect_job
-from applyuminati.applications.driver import DriverContext, DriverOutcome, DriverOutcomeKind
+from applyuminati.applications.driver import (
+    DriverContext,
+    DriverMetadata,
+    DriverOutcome,
+    DriverOutcomeKind,
+)
 from applyuminati.applications.runner import agent_still_owns
 from applyuminati.browser.base import (
     BrowserCapability,
     BrowserCapabilityError,
     BrowserSession,
     ControlOwner,
+)
+from applyuminati.browser.capabilities import (
+    PUBLIC_FORM_APPLICATION,
+    BrowserRequirements,
 )
 from applyuminati.browser.host_manager import BrowserHostManager, HostCommandError, LiveHost
 from applyuminati.browser.host_protocol import (
@@ -27,7 +37,11 @@ from applyuminati.browser.host_protocol import (
     RegisterMessage,
     ResultMessage,
 )
-from applyuminati.core.errors import FailureCategory, NeedsHumanError
+from applyuminati.core.errors import (
+    BackendUnavailableError,
+    FailureCategory,
+    NeedsHumanError,
+)
 from applyuminati.core.logging import get_logger
 from applyuminati.core.models.browser_host import BrowserHostRecord
 from applyuminati.core.models.execution import (
@@ -40,6 +54,7 @@ from applyuminati.core.models.execution import (
 from applyuminati.core.models.job import AtsVendor, Job, SourceTier
 from applyuminati.core.models.profile import CareerProfile
 from applyuminati.core.models.task import TaskState
+from applyuminati.core.registry import HealthReport, HealthState
 from applyuminati.core.settings import ExecutionMode
 from applyuminati.db.repositories.attempts import AttemptRepository
 from applyuminati.db.repositories.jobs import JobRepository
@@ -628,6 +643,226 @@ async def test_attempt_handler_releases_the_queue_on_human_pause(database) -> No
         finished = await queue.complete(claimed, result)
         assert finished.state is TaskState.SUCCEEDED
         assert finished.attempt_count == prior_attempts
+
+
+def _task_context() -> TaskContext:
+    async def _noop_checkpoint(state: dict[str, Any]) -> None:
+        return None
+
+    return TaskContext(
+        task_id="task-1",
+        kind=APPLICATION_ATTEMPT_KIND,
+        run_id=None,
+        attempt=1,
+        strategy=None,
+        resume_state={},
+        logger=get_logger(__name__),
+        checkpoint_sink=_noop_checkpoint,
+    )
+
+
+class _HandoffDriver:
+    """A driver whose contract demands a browser a person can join."""
+
+    metadata = DriverMetadata(
+        slug="greenhouse",
+        name="Greenhouse",
+        ats=AtsVendor.GREENHOUSE,
+        requirements=BrowserRequirements(
+            required=frozenset({BrowserCapability.NAVIGATE, BrowserCapability.HUMAN_HANDOFF})
+        ),
+    )
+
+    def detects(self, url: str):
+        return GreenhouseDriver().detects(url)
+
+    async def run(
+        self,
+        attempt: ApplicationAttempt,
+        session: BrowserSession,
+        context: DriverContext,
+    ) -> DriverOutcome:
+        raise AssertionError("the attempt must pause before any driver runs")
+
+
+async def test_an_unbound_attempt_persists_the_capability_selection(database) -> None:
+    """Selection runs where no session exists, and the decision is durable."""
+    job = _job()
+    selected = SimpleNamespace(metadata=SimpleNamespace(slug="playwright"))
+
+    async def _fake_select(settings, requirements):
+        assert requirements is PUBLIC_FORM_APPLICATION
+        health = HealthReport(plugin="playwright", state=HealthState.HEALTHY, detail="fake")
+        return selected, health
+
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        with patch("applyuminati.services.attempt_tasks.select_browser", _fake_select):
+            result = await run_application_attempt(
+                ApplicationAttemptPayload(attempt_id=attempt.id),
+                _task_context(),
+                repos=repos,
+            )
+        assert result["selected_backend"] == "playwright"
+        assert result["status"] == WorkflowState.PENDING.value
+        loaded = await repos.attempts.get(attempt.id)
+        assert loaded is not None
+        assert loaded.browser_backend == "playwright"
+        assert loaded.browser_requirements == {
+            "required": ["file_upload", "navigate", "semantic_snapshot"],
+            "preferred": ["human_handoff", "screenshot"],
+        }
+        assert loaded.events[-1].kind is AttemptEventKind.BROWSER_SELECTED
+
+
+async def test_an_unsatisfiable_contract_pauses_without_claiming_handoff(database) -> None:
+    job = _job()
+
+    async def _no_backend(settings, requirements):
+        raise BackendUnavailableError(
+            "no browser backend satisfies required: file_upload, navigate, "
+            "semantic_snapshot; playwright: not installed",
+            code="browser.none_available",
+            details={"rejections": ["playwright: not installed"]},
+        )
+
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        with patch("applyuminati.services.attempt_tasks.select_browser", _no_backend):
+            result = await run_application_attempt(
+                ApplicationAttemptPayload(attempt_id=attempt.id),
+                _task_context(),
+                repos=repos,
+            )
+        assert result["status"] == WorkflowState.WAITING_FOR_HUMAN.value
+        loaded = await repos.attempts.get(attempt.id)
+        assert loaded is not None
+        intervention = loaded.pending_intervention
+        assert intervention is not None
+        assert intervention.requires_browser_handoff is False
+        assert "playwright: not installed" in intervention.instruction
+        assert loaded.browser_backend is None
+
+
+async def test_a_handoff_contract_pauses_with_the_handoff_intervention(database) -> None:
+    job = _job()
+
+    async def _no_backend(settings, requirements):
+        raise BackendUnavailableError(
+            "no browser backend satisfies required: human_handoff, navigate",
+            code="browser.none_available",
+            details={},
+        )
+
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        with patch("applyuminati.services.attempt_tasks.select_browser", _no_backend):
+            result = await run_application_attempt(
+                ApplicationAttemptPayload(attempt_id=attempt.id),
+                _task_context(),
+                repos=repos,
+                driver=_HandoffDriver(),
+            )
+        assert result["status"] == WorkflowState.WAITING_FOR_HUMAN.value
+        loaded = await repos.attempts.get(attempt.id)
+        assert loaded is not None
+        intervention = loaded.pending_intervention
+        assert intervention is not None
+        assert intervention.requires_browser_handoff is True
+        assert "Connect the Browser Host" in intervention.instruction
+
+
+async def test_a_bound_attempt_is_never_reselected(database) -> None:
+    """Resume identity wins: a bound attempt never consults selection."""
+    job = _job()
+
+    def _boom(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a bound attempt must resume, not reselect")
+
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        with patch("applyuminati.services.attempt_tasks.select_browser", _boom):
+            result = await run_application_attempt(
+                ApplicationAttemptPayload(attempt_id=attempt.id),
+                _task_context(),
+                repos=repos,
+                driver=_PausedDriver(),
+                session_factory=_session_factory,
+            )
+        assert result["status"] == WorkflowState.WAITING_FOR_HUMAN.value
+
+
+async def test_an_unmatched_apply_url_pauses_without_a_handoff_claim(database) -> None:
+    job = build_job(
+        source="linkedin",
+        tier=SourceTier.AGGREGATOR,
+        source_job_id="99",
+        url="https://www.linkedin.com/jobs/view/99",
+        title="Staff Engineer",
+        company="Acme",
+    )
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        result = await run_application_attempt(
+            ApplicationAttemptPayload(attempt_id=attempt.id),
+            _task_context(),
+            repos=repos,
+        )
+        assert result["status"] == WorkflowState.WAITING_FOR_HUMAN.value
+        loaded = await repos.attempts.get(attempt.id)
+        assert loaded is not None
+        intervention = loaded.pending_intervention
+        assert intervention is not None
+        assert intervention.requires_browser_handoff is False
+        assert "No application driver matches" in intervention.instruction
+
+
+async def test_browser_requirements_round_trip_through_the_payload(database) -> None:
+    job = _job()
+    snapshot = {
+        "required": ["file_upload", "navigate", "semantic_snapshot"],
+        "preferred": ["human_handoff", "screenshot"],
+    }
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        attempt.browser_backend = "playwright"
+        attempt.browser_requirements = snapshot
+        await repos.attempts.save(attempt)
+    async with database.session() as other:
+        loaded = await AttemptRepository(other).get(attempt.id)
+    assert loaded is not None
+    assert loaded.browser_backend == "playwright"
+    assert loaded.browser_requirements == snapshot
 
 
 async def test_inbox_reports_live_host_presence(database) -> None:

@@ -5,8 +5,15 @@ from __future__ import annotations
 import contextlib
 from pathlib import Path
 
+import pytest
+
 from applyuminati.applications.detect import detect_ats, detect_job
-from applyuminati.applications.driver import DriverContext, DriverOutcomeKind, detect_driver
+from applyuminati.applications.driver import (
+    DriverContext,
+    DriverMetadata,
+    DriverOutcomeKind,
+    detect_driver,
+)
 from applyuminati.browser.base import (
     ActionResult,
     BrowserCapability,
@@ -20,6 +27,7 @@ from applyuminati.browser.base import (
     PageElement,
     PageObservation,
 )
+from applyuminati.browser.capabilities import PUBLIC_FORM_APPLICATION
 from applyuminati.core.clock import utcnow
 from applyuminati.core.models.execution import (
     ApplicationAttempt,
@@ -598,3 +606,15 @@ async def test_crash_after_click_does_not_submit_again_on_restart(database) -> N
     )
     assert replay.clicks == []
     assert outcome.kind is DriverOutcomeKind.WAITING_FOR_HUMAN
+
+
+def test_form_drivers_declare_public_form_requirements() -> None:
+    """Public forms may run on Playwright; handoff stays a preference."""
+    assert GreenhouseDriver().metadata.requirements is PUBLIC_FORM_APPLICATION
+    assert LeverDriver().metadata.requirements is PUBLIC_FORM_APPLICATION
+
+
+def test_driver_metadata_demands_a_browser_contract() -> None:
+    """A driver that cannot state its requirements cannot be selected for."""
+    with pytest.raises(TypeError):
+        DriverMetadata(slug="x", name="X", ats=AtsVendor.GREENHOUSE)  # pyright: ignore[reportCallIssue]

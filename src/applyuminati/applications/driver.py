@@ -19,6 +19,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from applyuminati.applications.detect import Detection, detect_ats
 from applyuminati.browser.base import BrowserSession, PageObservation
+from applyuminati.browser.capabilities import BrowserRequirements
 from applyuminati.core.errors import ApplyuminatiError, FailureCategory
 from applyuminati.core.models.execution import (
     ApplicationAttempt,
@@ -67,8 +68,10 @@ class DriverMetadata:
     slug: str
     name: str
     ats: AtsVendor
+    #: The browser contract this workflow demands. Deliberately mandatory: a
+    #: driver that does not state its requirements cannot be selected for.
+    requirements: BrowserRequirements
     version: str = "1"
-    #: Host suffixes this driver claims. Detection uses these before a page load.
     hosts: frozenset[str] = field(default_factory=frozenset)
 
 

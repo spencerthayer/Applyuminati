@@ -251,6 +251,29 @@ requires: persistent_login, human_handoff, file_upload
 Capabilities override preference order. A workflow that needs
 `PERSISTENT_LOGIN` never silently receives an isolated backend.
 
+The requirements come from the driver. `DriverMetadata.requirements` is a
+mandatory statement of the browser contract a workflow demands, and selection
+runs against that declaration, never against where the job was discovered: a
+LinkedIn-discovered Greenhouse posting gets Greenhouse's requirements. The
+built-in form drivers declare `PUBLIC_FORM_APPLICATION`: no account, no login
+wall, resume attached to the form itself. It requires `navigate`,
+`semantic_snapshot` and `file_upload` and merely *prefers* `human_handoff`, so
+a backend that cannot hand the browser to a person is a valid answer for a
+public form. `APPLICATION_SUBMISSION` (handoff mandatory) and
+`AUTHENTICATED_APPLICATION` (login persistence mandatory) remain the stronger
+contracts for flows that need them.
+
+The worker consults selection only where no session exists. An attempt already
+bound to a Browser Host session resumes that exact session; durable identity
+wins over fresh selection. For an unbound attempt the resolved backend slug
+and a snapshot of the requirements are persisted on the attempt
+(`browser_backend`, `browser_requirements`) together with a
+`browser_selected` event. A contract nothing satisfies produces an
+intervention carrying the exact per-backend rejections, flagged as a handoff
+intervention only when `human_handoff` was actually required. Local session
+acquisition for a selected backend is not wired yet: the decision is durable,
+and the attempt waits for the increment that adds it.
+
 ## 4. Application attempts
 
 An attempt is the durable execution record for one try at one application. It

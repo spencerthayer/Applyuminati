@@ -174,14 +174,15 @@ def test_host_advertisement_drops_capabilities_the_dispatcher_cannot_run() -> No
     )
     assert BrowserCapability.NAVIGATE.value in advertised
     assert BrowserCapability.HUMAN_HANDOFF.value in advertised
+    # Tabs and downloads are dispatched now; the host advertises them when the
+    # backend behind it has them.
+    assert BrowserCapability.MULTI_TAB.value in advertised
+    assert BrowserCapability.DOWNLOADS.value in advertised
     assert BrowserCapability.JAVASCRIPT_EVAL.value not in advertised
-    assert BrowserCapability.MULTI_TAB.value not in advertised
-    assert BrowserCapability.DOWNLOADS.value not in advertised
-    assert {
-        BrowserCapability.JAVASCRIPT_EVAL,
-        BrowserCapability.MULTI_TAB,
-        BrowserCapability.DOWNLOADS,
-    } <= HOST_UNDISPATCHABLE_CAPABILITIES
+    assert (
+        frozenset({BrowserCapability.JAVASCRIPT_EVAL, BrowserCapability.NETWORK_INTERCEPT})
+        == HOST_UNDISPATCHABLE_CAPABILITIES
+    )
 
 
 async def test_advertise_backends_never_promises_undispatchable_operations() -> None:
@@ -196,40 +197,57 @@ async def test_advertise_backends_never_promises_undispatchable_operations() -> 
 
 
 @pytest.mark.parametrize(
-    ("command", "capability"),
+    "command",
     [
-        (HostCommand.LIST_TABS, BrowserCapability.MULTI_TAB),
-        (HostCommand.OPEN_TAB, BrowserCapability.MULTI_TAB),
-        (HostCommand.ACTIVATE_TAB, BrowserCapability.MULTI_TAB),
-        (HostCommand.CLOSE_TAB, BrowserCapability.MULTI_TAB),
-        (HostCommand.DOWNLOAD, BrowserCapability.DOWNLOADS),
+        HostCommand.LIST_TABS,
+        HostCommand.OPEN_TAB,
+        HostCommand.ACTIVATE_TAB,
+        HostCommand.CLOSE_TAB,
     ],
 )
-async def test_tab_and_download_commands_are_refused_by_capability_name(
-    tmp_path: Path, command: HostCommand, capability: BrowserCapability
+async def test_tab_commands_are_dispatched_to_the_session(
+    tmp_path: Path, command: HostCommand
 ) -> None:
-    """The local session implements these; the host still does not dispatch them.
-
-    A backend being able to do something in-process is not the same claim as a
-    host being able to do it over the wire, and the two are advertised
-    separately. ``_Session`` above implements all five, so a refusal here can
-    only come from the dispatcher.
-    """
+    """``_Session`` implements tabs; the host frames and forwards them."""
     dispatcher = CommandDispatcher(
         documents_dir=tmp_path,
-        capabilities=frozenset({BrowserCapability.MULTI_TAB.value, "downloads"}),
+        capabilities=frozenset({BrowserCapability.MULTI_TAB.value}),
     )
     result = await dispatcher.execute(
         HostSession(_Session(), "playwright"),
         CommandMessage(command=command, session_id="s1", params={"tab_id": "tab-1"}),
     )
+    assert result.ok is True, result.error_message
+
+
+async def test_a_download_without_an_idempotency_key_is_malformed(tmp_path: Path) -> None:
+    """A download clicks a locator, so it is consequential like CLICK."""
+    dispatcher = CommandDispatcher(documents_dir=tmp_path, capabilities=frozenset({"downloads"}))
+    result = await dispatcher.execute(
+        HostSession(_Session(), "playwright"),
+        CommandMessage(command=HostCommand.DOWNLOAD, session_id="s1", params={"locator": "#a"}),
+    )
     assert result.ok is False
-    assert result.error_code is HostErrorCode.CAPABILITY_UNAVAILABLE
-    assert capability.value in (result.error_message or "")
+    assert result.error_code is HostErrorCode.MALFORMED
 
 
-def test_a_backend_that_does_tabs_locally_still_does_not_advertise_them_remotely() -> None:
-    """Playwright gained MULTI_TAB and DOWNLOADS. The host must not inherit them."""
+async def test_a_download_with_an_idempotency_key_is_dispatched(tmp_path: Path) -> None:
+    dispatcher = CommandDispatcher(documents_dir=tmp_path, capabilities=frozenset({"downloads"}))
+    result = await dispatcher.execute(
+        HostSession(_Session(), "playwright"),
+        CommandMessage(
+            command=HostCommand.DOWNLOAD,
+            session_id="s1",
+            params={"locator": "#offer"},
+            idempotency_key="attempt:1:download",
+        ),
+    )
+    assert result.ok is True, result.error_message
+    assert result.result["filename"] == "offer.pdf"
+
+
+def test_a_backend_that_does_tabs_locally_advertises_them_remotely() -> None:
+    """Playwright's MULTI_TAB and DOWNLOADS now travel: dispatch is real."""
     from applyuminati.core.settings import Settings
     from applyuminati.plugins.browsers.playwright_backend import PlaywrightBackend
 
@@ -238,8 +256,8 @@ def test_a_backend_that_does_tabs_locally_still_does_not_advertise_them_remotely
     assert BrowserCapability.DOWNLOADS in local
 
     advertised = host_advertised_capabilities(local)
-    assert BrowserCapability.MULTI_TAB.value not in advertised
-    assert BrowserCapability.DOWNLOADS.value not in advertised
+    assert BrowserCapability.MULTI_TAB.value in advertised
+    assert BrowserCapability.DOWNLOADS.value in advertised
     assert BrowserCapability.NAVIGATE.value in advertised
 
 

@@ -32,24 +32,21 @@ __all__ = [
 #: Capabilities a backend may have locally that this host will not execute.
 #: Advertising them would let a driver select the host and then fail immediately.
 #:
-#: A local backend implementing an operation is not the same claim as the host
-#: being able to carry it out remotely. The Playwright backend does tabs and
-#: downloads in-process; routing either over the wire needs the commands
-#: dispatched and the results framed, which has not been done. Until it is, what
-#: a host advertises is the intersection of the backend's capabilities and this
-#: set's complement.
+#: Tabs and downloads moved out of this set: the dispatcher frames and forwards
+#: them, and what a host advertises is again the intersection of the backend's
+#: capabilities and this set's complement.
 HOST_UNDISPATCHABLE_CAPABILITIES: frozenset[BrowserCapability] = frozenset(
     {
         BrowserCapability.JAVASCRIPT_EVAL,
-        BrowserCapability.MULTI_TAB,
-        BrowserCapability.DOWNLOADS,
         BrowserCapability.NETWORK_INTERCEPT,
     }
 )
 
-#: The commands each undispatchable capability would carry, so the refusal names
-#: the capability the host withheld rather than saying "not implemented".
-_UNDISPATCHABLE_COMMANDS: dict[HostCommand, BrowserCapability] = {
+#: The capability each dispatched command carries. A host whose backend does
+#: not have it refuses with ``CAPABILITY_UNAVAILABLE``, which the client
+#: translates to ``BrowserCapabilityError`` — the same shape a local incapable
+#: session raises, so callers handle one exception type either way.
+_COMMAND_CAPABILITIES: dict[HostCommand, BrowserCapability] = {
     HostCommand.OPEN_TAB: BrowserCapability.MULTI_TAB,
     HostCommand.CLOSE_TAB: BrowserCapability.MULTI_TAB,
     HostCommand.ACTIVATE_TAB: BrowserCapability.MULTI_TAB,
@@ -166,6 +163,10 @@ class CommandDispatcher:
         if acting and owner is not ControlOwner.AGENT:
             msg = "the user currently owns this session"
             raise _HostRefusal(HostErrorCode.USER_HAS_CONTROL, msg)
+        required = _COMMAND_CAPABILITIES.get(command.command)
+        if required is not None and required.value not in self.capabilities:
+            msg = f"{required.value} is not advertised by this backend"
+            raise _HostRefusal(HostErrorCode.CAPABILITY_UNAVAILABLE, msg)
 
         if command.command is HostCommand.NAVIGATE:
             observation = await session.navigate(str(params["url"]))
@@ -173,6 +174,25 @@ class CommandDispatcher:
         if command.command is HostCommand.OBSERVE:
             observation = await session.observe()
             return observation.model_dump(mode="json")
+        if command.command is HostCommand.LIST_TABS:
+            tabs = await session.list_tabs()
+            return {"tabs": [tab.model_dump(mode="json") for tab in tabs]}
+        if command.command is HostCommand.OPEN_TAB:
+            url = params.get("url")
+            tab = await session.open_tab(str(url) if url is not None else None)
+            return tab.model_dump(mode="json")
+        if command.command is HostCommand.ACTIVATE_TAB:
+            result = await session.activate_tab(str(params["tab_id"]))
+            return result.model_dump(mode="json")
+        if command.command is HostCommand.CLOSE_TAB:
+            result = await session.close_tab(str(params["tab_id"]))
+            return result.model_dump(mode="json")
+        if command.command is HostCommand.DOWNLOAD:
+            download = await session.download(
+                str(params["locator"]),
+                timeout_seconds=params.get("timeout_seconds"),
+            )
+            return download.model_dump(mode="json")
         if command.command is HostCommand.CLICK:
             result = await session.click(str(params["locator"]), label=params.get("label"))
             return result.model_dump(mode="json")
@@ -216,19 +236,6 @@ class CommandDispatcher:
                 raise _HostRefusal(HostErrorCode.CAPABILITY_UNAVAILABLE, msg)
             msg = "evaluate is not exposed as host-scoped script"
             raise _HostRefusal(HostErrorCode.UNKNOWN_COMMAND, msg)
-        capability = _UNDISPATCHABLE_COMMANDS.get(command.command)
-        if capability is not None:
-            # The local session may well implement this — the Playwright backend
-            # does — but the host does not dispatch it, and
-            # HOST_UNDISPATCHABLE_CAPABILITIES keeps the matching capability out
-            # of what this host advertises. The two have to move together: a
-            # host that refused a command it had advertised would be selected
-            # for the work and then fail at the first call.
-            msg = (
-                f"{command.command.value} is not dispatched by this host; "
-                f"{capability.value} is not advertised"
-            )
-            raise _HostRefusal(HostErrorCode.CAPABILITY_UNAVAILABLE, msg)
         if command.command is HostCommand.HEALTH:
             return {"backend": hosted.backend}
         if command.command is HostCommand.CANCEL:

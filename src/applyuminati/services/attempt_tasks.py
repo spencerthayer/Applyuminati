@@ -18,6 +18,7 @@ from applyuminati.browser.selection import select_browser
 from applyuminati.core.errors import BackendUnavailableError, NotFoundError
 from applyuminati.core.logging import get_logger
 from applyuminati.core.models.execution import (
+    WORKFLOW_TERMINAL,
     ApplicationAttempt,
     AttemptEventKind,
     InterventionReason,
@@ -117,6 +118,10 @@ async def _run(
     result = {"status": updated.workflow_state.value, "attempt_id": updated.id}
     if attempt.browser_backend:
         result["selected_backend"] = attempt.browser_backend
+    if updated.workflow_state in WORKFLOW_TERMINAL:
+        # Host-backed sessions are the host's to keep; the manager only
+        # closes what it owns, so this is a no-op on the host path.
+        await _local_manager().close(attempt.id)
     return result
 
 

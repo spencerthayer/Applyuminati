@@ -7,6 +7,7 @@ this module.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 
 from applyuminati.browser.base import (
@@ -86,6 +87,14 @@ class LocalBrowserManager:
         """Drop the registry entry. The session itself closes with the backend."""
         self._sessions.pop(attempt_id, None)
 
+    async def close(self, attempt_id: str) -> None:
+        """Close and forget the attempt's session, if this manager owns one."""
+        existing = self._sessions.pop(attempt_id, None)
+        if existing is None:
+            return
+        with contextlib.suppress(Exception):
+            await existing.session.close()
+
     def _backend_for(self, slug: str, attempt: ApplicationAttempt) -> BrowserBackend:
         backend = self._backends.get(slug)
         if backend is not None:
@@ -108,11 +117,17 @@ class LocalBrowserManager:
         snapshot = attempt.browser_requirements
         if not snapshot:
             return
-        missing = [
-            name
-            for name in snapshot.get("required", [])
-            if not backend.metadata.supports(BrowserCapability(name))
-        ]
+        missing: list[str] = []
+        for name in snapshot.get("required", []):
+            try:
+                capability = BrowserCapability(name)
+            except ValueError:
+                # An unknown name cannot be satisfied by anything; refuse
+                # through the typed path instead of crashing the task loop.
+                missing.append(name)
+                continue
+            if not backend.metadata.supports(capability):
+                missing.append(name)
         if missing:
             raise BackendUnavailableError(
                 f"selected backend {backend.metadata.slug!r} does not satisfy "

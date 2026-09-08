@@ -697,10 +697,14 @@ class _HandoffDriver:
 class _FakeLocalManager:
     def __init__(self) -> None:
         self.acquired: list[str] = []
+        self.closed: list[str] = []
 
     async def acquire(self, attempt: ApplicationAttempt) -> BrowserSession:
         self.acquired.append(attempt.id)
         return cast(BrowserSession, object())
+
+    async def close(self, attempt_id: str) -> None:
+        self.closed.append(attempt_id)
 
 
 async def test_an_unbound_attempt_persists_the_capability_selection(database) -> None:
@@ -1443,3 +1447,78 @@ async def test_a_resumed_attempt_never_reselects_a_persisted_backend(database) -
         assert loaded is not None
         assert loaded.browser_backend == "playwright"
         assert loaded.browser_session_id == attempt.id
+
+
+class _FinishingDriver:
+    metadata = GreenhouseDriver().metadata
+
+    def detects(self, url: str):
+        return GreenhouseDriver().detects(url)
+
+    async def run(
+        self,
+        attempt: ApplicationAttempt,
+        session: BrowserSession,
+        context: DriverContext,
+    ) -> DriverOutcome:
+        attempt.workflow_state = WorkflowState.COMPLETED
+        attempt.completed_at = attempt.updated_at
+        return DriverOutcome(kind=DriverOutcomeKind.COMPLETED, attempt=attempt)
+
+
+async def test_a_terminal_attempt_closes_its_local_session(database) -> None:
+    """No per-attempt Playwright context leak across a worker's lifetime."""
+    job = _job()
+    fake_manager = _FakeLocalManager()
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        attempt.browser_backend = "playwright"
+        await repos.attempts.save(attempt)
+        with patch("applyuminati.services.attempt_tasks._local_manager", lambda: fake_manager):
+            result = await run_application_attempt(
+                ApplicationAttemptPayload(attempt_id=attempt.id),
+                _task_context(),
+                repos=repos,
+                driver=_FinishingDriver(),
+            )
+        assert result["status"] == WorkflowState.COMPLETED.value
+        assert fake_manager.closed == [attempt.id]
+
+
+async def test_a_paused_attempt_keeps_its_local_session(database) -> None:
+    """Resume re-enters the same session; pausing must not close it."""
+    job = _job()
+    fake_manager = _FakeLocalManager()
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        attempt.browser_backend = "playwright"
+        await repos.attempts.save(attempt)
+        with patch("applyuminati.services.attempt_tasks._local_manager", lambda: fake_manager):
+            await run_application_attempt(
+                ApplicationAttemptPayload(attempt_id=attempt.id),
+                _task_context(),
+                repos=repos,
+                driver=_PausedDriver(),
+            )
+        assert fake_manager.closed == []
+
+
+async def test_an_unknown_capability_name_refuses_without_crashing() -> None:
+    backend = _StubBackend("playwright", _PUBLIC_FORM_REQUIRED)
+    manager = _manager_with(backend)
+    attempt = _selected_attempt()
+    attempt.browser_requirements = {"required": ["navigate", "not_a_real_capability"]}
+    with pytest.raises(BackendUnavailableError) as raised:
+        await manager.acquire(attempt)
+    assert raised.value.code == "browser.selection_contract_unmet"
+    assert "not_a_real_capability" in str(raised.value)

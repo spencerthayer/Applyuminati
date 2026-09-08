@@ -58,26 +58,33 @@ class LocalBrowserManager:
         backend = self._backend_for(slug, attempt)
         existing = self._sessions.get(attempt.id)
         if existing is not None and existing.backend_slug == slug:
+            # A task retry within this process re-enters the same session.
             return existing.session
         session = await backend.open_session(session_id=attempt.id)
         self._sessions[attempt.id] = LocalSession(backend_slug=slug, session=session)
         if existing is not None:
-            # A restart lost the old session with the process that owned it.
-            # Re-opening is honest here: storage-state persistence is exactly
-            # what makes a fresh context carry the login forward.
+            # The persisted backend changed, which durable selection makes
+            # impossible. Surface it rather than open silently over it.
+            log.warning(
+                "attempt.local_session_backend_changed",
+                attempt_id=attempt.id,
+                previous=existing.backend_slug,
+                backend=slug,
+            )
+        else:
             log.info(
-                "attempt.local_session_reacquired",
+                "attempt.local_session_opened",
                 attempt_id=attempt.id,
                 backend=slug,
             )
         return session
 
+    def owns(self, attempt_id: str) -> bool:
+        return attempt_id in self._sessions
+
     def release(self, attempt_id: str) -> None:
         """Drop the registry entry. The session itself closes with the backend."""
         self._sessions.pop(attempt_id, None)
-
-    def owns(self, attempt_id: str) -> bool:
-        return attempt_id in self._sessions
 
     def _backend_for(self, slug: str, attempt: ApplicationAttempt) -> BrowserBackend:
         backend = self._backends.get(slug)

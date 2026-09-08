@@ -97,26 +97,16 @@ async def _run(
     manager = get_container().browser_hosts
     session = await service.bind_session(attempt, manager=manager, session_factory=session_factory)
     if session is None:
-        selected = await _select_or_pause(attempt, job, driver, repos)
-        if selected.get("selected_backend") is None:
-            return selected
-        try:
-            session = await _local_manager().acquire(attempt)
-        except BackendUnavailableError as exc:
-            # Belt and braces: selection already checked the contract, so this
-            # refuses rather than substitutes or crashes the task loop.
-            snapshot = attempt.browser_requirements or {}
-            needs_handoff = BrowserCapability.HUMAN_HANDOFF.value in snapshot.get("required", [])
-            attempt.open_intervention(
-                InterventionReason.USER_REVIEW,
-                f"The selected browser cannot run this application: {exc}",
-                requires_browser_handoff=needs_handoff,
-            )
-            attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN
-            await repos.attempts.save(attempt)
+        if attempt.browser_backend is None:
+            # Selection runs exactly once per attempt: the moment a backend is
+            # persisted, that decision is durable and every later run acquires
+            # it instead of re-selecting.
+            selected = await _select_or_pause(attempt, job, driver, repos)
+            if selected.get("selected_backend") is None:
+                return selected
+        session = await _acquire_local(attempt, repos)
+        if session is None:
             return {"status": attempt.workflow_state.value, "attempt_id": attempt.id}
-        attempt.browser_session_id = attempt.id
-        await repos.attempts.save(attempt)
     driver_context = DriverContext(job=job, profile=profile, mode=attempt.submission_mode)
     updated = await service.run_step(attempt, session, driver_context, driver=driver)
     context.logger.info(
@@ -130,14 +120,34 @@ async def _run(
     return result
 
 
+async def _acquire_local(attempt: ApplicationAttempt, repos: Repositories) -> BrowserSession | None:
+    """Acquire the locally selected session, or open a durable refusal.
+
+    A resumed attempt with a recorded backend goes straight here, never back
+    through selection: the manager re-checks the persisted snapshot against
+    the backend's declared capabilities and refuses rather than substitutes.
+    """
+    try:
+        session = await _local_manager().acquire(attempt)
+    except BackendUnavailableError as exc:
+        snapshot = attempt.browser_requirements or {}
+        needs_handoff = BrowserCapability.HUMAN_HANDOFF.value in snapshot.get("required", [])
+        attempt.open_intervention(
+            InterventionReason.USER_REVIEW,
+            f"The selected browser cannot run this application: {exc}",
+            requires_browser_handoff=needs_handoff,
+        )
+        attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN
+        await repos.attempts.save(attempt)
+        return None
+    attempt.browser_session_id = attempt.id
+    await repos.attempts.save(attempt)
+    return session
+
+
 def _local_manager() -> LocalBrowserManager:
     """The process-owned local browser manager for the application worker."""
-    container = get_container()
-    manager = getattr(container, "local_browsers", None)
-    if manager is None:
-        manager = LocalBrowserManager(container.settings)
-        container.local_browsers = manager  # type: ignore[attr-defined]
-    return manager
+    return get_container().local_browsers
 
 
 async def _select_or_pause(

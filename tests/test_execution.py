@@ -1403,3 +1403,43 @@ async def test_an_acquisition_refusal_becomes_a_durable_intervention(database) -
         assert intervention is not None
         assert intervention.requires_browser_handoff is False
         assert "does not satisfy the persisted contract" in intervention.instruction
+
+
+async def test_a_resumed_attempt_never_reselects_a_persisted_backend(database) -> None:
+    """The PR #9 decision is durable: acquisition happens, selection does not."""
+    job = _job()
+    fake_manager = _FakeLocalManager()
+
+    def _forbidden_select(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("a persisted selection must never be re-selected")
+
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        service = AttemptService(repos)
+        attempt = await service.create(
+            application_id="app1", job=job, profile=None, mode=ExecutionMode.FILL_NO_SUBMIT
+        )
+        attempt.browser_backend = "playwright"
+        attempt.browser_requirements = {
+            "required": ["file_upload", "navigate", "semantic_snapshot"],
+            "preferred": ["human_handoff", "screenshot"],
+        }
+        await repos.attempts.save(attempt)
+        with (
+            patch("applyuminati.services.attempt_tasks.select_browser", _forbidden_select),
+            patch("applyuminati.services.attempt_tasks._local_manager", lambda: fake_manager),
+        ):
+            result = await run_application_attempt(
+                ApplicationAttemptPayload(attempt_id=attempt.id),
+                _task_context(),
+                repos=repos,
+                driver=_PausedDriver(),
+            )
+        assert fake_manager.acquired == [attempt.id]
+        assert result["status"] == WorkflowState.WAITING_FOR_HUMAN.value
+        assert result["selected_backend"] == "playwright"
+        loaded = await repos.attempts.get(attempt.id)
+        assert loaded is not None
+        assert loaded.browser_backend == "playwright"
+        assert loaded.browser_session_id == attempt.id

@@ -42,6 +42,18 @@ HOST_UNDISPATCHABLE_CAPABILITIES: frozenset[BrowserCapability] = frozenset(
     }
 )
 
+#: The capability each dispatched command carries. A host whose backend does
+#: not have it refuses with ``CAPABILITY_UNAVAILABLE``, which the client
+#: translates to ``BrowserCapabilityError`` — the same shape a local incapable
+#: session raises, so callers handle one exception type either way.
+_COMMAND_CAPABILITIES: dict[HostCommand, BrowserCapability] = {
+    HostCommand.OPEN_TAB: BrowserCapability.MULTI_TAB,
+    HostCommand.CLOSE_TAB: BrowserCapability.MULTI_TAB,
+    HostCommand.ACTIVATE_TAB: BrowserCapability.MULTI_TAB,
+    HostCommand.LIST_TABS: BrowserCapability.MULTI_TAB,
+    HostCommand.DOWNLOAD: BrowserCapability.DOWNLOADS,
+}
+
 
 def host_advertised_capabilities(capabilities: Iterable[BrowserCapability | str]) -> list[str]:
     """Backend capabilities the dispatcher can actually honour."""
@@ -151,6 +163,10 @@ class CommandDispatcher:
         if acting and owner is not ControlOwner.AGENT:
             msg = "the user currently owns this session"
             raise _HostRefusal(HostErrorCode.USER_HAS_CONTROL, msg)
+        required = _COMMAND_CAPABILITIES.get(command.command)
+        if required is not None and required.value not in self.capabilities:
+            msg = f"{required.value} is not advertised by this backend"
+            raise _HostRefusal(HostErrorCode.CAPABILITY_UNAVAILABLE, msg)
 
         if command.command is HostCommand.NAVIGATE:
             observation = await session.navigate(str(params["url"]))

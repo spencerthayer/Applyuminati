@@ -1,0 +1,124 @@
+# Builds the `applyuminati` distribution and, on request, uploads it to PyPI,
+# so a user can `pipx install applyuminati` or `uv tool install applyuminati`
+# instead of cloning the repository.
+#
+# RELEASE GATING. Like release.yml, this workflow has NO `push` trigger. It is
+# `workflow_call` only, invoked by ci.yml from a job that `needs` every
+# validation job, so there is no event path that reaches an upload without
+# lint, types, import contracts, tests, web and Docker having passed first.
+# tests/test_workflows.py asserts that absence, and the ci.yml side of the
+# gate, so neither half can be quietly removed.
+#
+# Being called rather than triggered also keeps `github.ref` on the real ref,
+# so a tag build produces the tag's own version.
+#
+# The `publish` input defaults to false: every ordinary CI run exercises the
+# build and validation path without an upload. Only the ci.yml job that carries
+# the release condition passes `publish: true`.
+#
+# UPLOAD CREDENTIALS. PyPI Trusted Publishing via OIDC. There is no API token
+# in this repository and none may be added: `id-token: write` plus the `pypi`
+# environment is the whole mechanism. The environment is also where required
+# reviewers are configured, which is what makes a first publish a deliberate
+# act rather than a side effect of a tag push.
+
+name: PyPI
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Upload the built distributions to PyPI. False builds and validates only."
+        type: boolean
+        default: false
+
+concurrency:
+  group: pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      # `make dist` also runs the metadata check, so a malformed pyproject that
+      # still builds (missing Homepage, unreadable README) fails here rather
+      # than on a maintainer's `pip install`.
+      - name: Build wheel and sdist
+        run: make dist
+
+      # Installing the wheel into an empty environment and running the entry
+      # point is the only check that catches an *undeclared* dependency. A
+      # missing extra like sqlalchemy[asyncio] builds perfectly, installs
+      # perfectly, and then dies on the first import -- and it stays invisible
+      # to every other check here, because the dev environment and the Docker
+      # image both drag greenlet in through their own dependencies. Once this
+      # is on PyPI the only remedy is a yank and a re-release, so it is caught
+      # here instead.
+      - name: Smoke test the wheel in a clean environment
+        run: |
+          uv venv /tmp/wheelcheck --python 3.12
+          uv pip install --python /tmp/wheelcheck/bin/python dist/*.whl
+          /tmp/wheelcheck/bin/applyuminati --help
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    # The whole point of the boolean: unset, or false, means the distributions
+    # are built and checked and then discarded.
+    if: inputs.publish
+    environment: pypi
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Mints the OIDC token PyPI exchanges for a short-lived upload token.
+      id-token: write
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # Pinned to a major version tag, matching how every other action in this
+      # repository is pinned. `attestations: true` uploads PEP 740 provenance
+      # alongside the files, which is what lets `pip install` show the build
+      # came from this repository at this commit.
+      - name: Publish to PyPI
+        id: publish
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+          print-hash: true
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Published to PyPI"
+            echo
+            echo '```'
+            echo "${{ steps.publish.outputs.url }}"
+            echo '```'
+            echo
+            echo "Install with \`pipx install applyuminati\` or \`uv tool install applyuminati\`."
+          } >> "$GITHUB_STEP_SUMMARY"

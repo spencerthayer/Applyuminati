@@ -48,6 +48,7 @@ class JobService:
             sources=list(sources) if sources else None,
             recommendation=recommendation.value if recommendation else None,
             min_score=min_score,
+            profile_id=profile_id or None,
             states=[s.value for s in states] if states else None,
             remote_modes=[rm.value for rm in remote_modes] if remote_modes else None,
             has_score=has_score,

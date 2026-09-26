@@ -65,3 +65,44 @@ def test_guard_catches_invented_employer(sample_resume: dict) -> None:
     report = guard.check(bad)
     assert not report.ok
     assert any(v.kind == "unknown_employer" for v in report.hard_violations)
+
+
+def test_import_accepts_string_location(sample_resume: dict) -> None:
+    """JSON Resume allows ``basics.location`` to be a plain string."""
+    doc = {**sample_resume, "basics": {**sample_resume["basics"], "location": "Austin, TX"}}
+    profile, warnings = import_json_resume(doc)
+    assert not [w for w in warnings if "location" in w]
+    location = profile.resume.basics.location
+    assert location is not None
+    assert location.raw == "Austin, TX"
+
+
+def test_import_preserves_object_location(sample_resume: dict) -> None:
+    """The object form is unchanged: its own fields are kept verbatim."""
+    doc = {
+        **sample_resume,
+        "basics": {
+            **sample_resume["basics"],
+            "location": {"city": "Austin", "region": "TX", "countryCode": "US"},
+        },
+    }
+    profile, warnings = import_json_resume(doc)
+    assert warnings == []
+    location = profile.resume.basics.location
+    assert location is not None
+    assert (location.city, location.region, location.countryCode) == ("Austin", "TX", "US")
+    assert location.raw is None
+
+
+def test_string_location_keeps_unusual_characters(sample_resume: dict) -> None:
+    doc = {
+        **sample_resume,
+        "basics": {
+            **sample_resume["basics"],
+            "location": "São Paulo — Brasil 🌍 (remote)",
+        },
+    }
+    profile, _ = import_json_resume(doc)
+    location = profile.resume.basics.location
+    assert location is not None
+    assert location.raw == "São Paulo — Brasil 🌍 (remote)"

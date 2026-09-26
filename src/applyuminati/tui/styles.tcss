@@ -1,0 +1,45 @@
+/* Base layout. Header and Footer dock themselves, so the content area takes
+   what is left; sizing it 100% would overflow. */
+
+Screen {
+    layout: vertical;
+}
+
+#content {
+    height: 1fr;
+    padding: 0 1;
+}
+
+/* Split pane: a list on the left, a detail on the right. */
+#body {
+    height: 1fr;
+}
+
+#list-pane {
+    width: 2fr;
+    height: 1fr;
+    border: round $accent;
+}
+
+#detail-pane {
+    width: 3fr;
+    height: 1fr;
+    padding: 0 1;
+    border: round $success;
+    overflow-y: auto;
+}
+
+#toolbar {
+    dock: top;
+    height: 3;
+}
+
+#status {
+    dock: bottom;
+    height: 1;
+    color: $text-muted;
+}
+
+#placeholder {
+    padding: 1 0;
+}

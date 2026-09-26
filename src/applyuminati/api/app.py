@@ -49,6 +49,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         reset = await repos.browser_hosts.clear_stale_connection_states()
     if reset:
         log.info("api.browser_hosts_reset", count=reset)
+    changed = await container.sync_settings_to_db()
+    if changed:
+        log.info("api.sources_synced_from_settings", count=changed)
     stop_worker = asyncio.Event()
     from applyuminati.services.attempt_tasks import run_attempt_worker_forever
 
@@ -131,18 +134,39 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+def resolve_web_dist(configured: Path | None, package_dir: Path) -> Path | None:
+    """Find the built web bundle, or ``None`` when there is nothing to serve.
+
+    ``web_dist`` unset means auto-detect, so a checkout works with no
+    configuration at all: the assets live outside the Python package, at
+    ``apps/web/dist`` beside it. An installed wheel has no such parent, so
+    packaged data under the package directory is the second chance. Returns
+    the configured path verbatim otherwise, existing or not, so the caller
+    decides what a missing directory means.
+    """
+    if configured is not None:
+        return Path(configured)
+    for ancestor in (package_dir, *package_dir.parents):
+        candidate = ancestor / "apps" / "web" / "dist"
+        if candidate.is_dir():
+            return candidate
+    packaged = package_dir / "web_dist"
+    if packaged.is_dir():
+        return packaged
+    return None
+
+
 def _mount_static(app: FastAPI, container: ServiceContainer) -> None:
     """Serve the built React bundle at ``/`` when it exists.
 
-    In development the web_dist path is unset and the SPA is served by Vite;
-    in Docker the bundle is baked into the image and served here.
+    In development the SPA is served by Vite and there is nothing to mount
+    here; in a checkout or Docker image the bundle is on disk and is served
+    with the API on the same origin. A headless install with no assets still
+    serves the API.
     """
-    web_dist = container.settings.server.web_dist
-    if web_dist is None:
-        return
-    dist = Path(web_dist)
-    if not dist.is_dir():
-        log.warning("api.web_dist_missing", path=str(dist))
+    dist = resolve_web_dist(container.settings.server.web_dist, Path(__file__).resolve().parent)
+    if dist is None or not dist.is_dir():
+        log.warning("api.web_dist_missing", path=str(dist) if dist else None)
         return
 
     # Static assets (JS, CSS, images) under /assets.
@@ -154,6 +178,11 @@ def _mount_static(app: FastAPI, container: ServiceContainer) -> None:
 
     @app.get("/{path:path}", include_in_schema=False, response_model=None)
     async def spa(path: str) -> FileResponse | JSONResponse:
+        # The API is a separate surface with its own error contract. Falling
+        # back to index.html for a mistyped /api path would answer a client's
+        # bug with 200 text/html and send them looking in the wrong place.
+        if path == "api" or path.startswith("api/"):
+            return JSONResponse({"detail": "not found"}, status_code=404)
         # Try to serve a real file first; fall back to index.html for client-side routing.
         candidate = dist / path
         if path and candidate.is_file():

@@ -7,7 +7,11 @@ from collections.abc import Sequence
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from applyuminati.core.models.execution import ApplicationAttempt, WorkflowState
+from applyuminati.core.models.execution import (
+    WORKFLOW_TERMINAL,
+    ApplicationAttempt,
+    WorkflowState,
+)
 from applyuminati.db.models import ApplicationAttemptRow
 
 __all__ = ["AttemptRepository"]
@@ -101,6 +105,28 @@ class AttemptRepository:
 
     async def get(self, attempt_id: str) -> ApplicationAttempt | None:
         row = await self._session.get(ApplicationAttemptRow, attempt_id)
+        return _to_record(row) if row else None
+
+    async def active_for_job(self, job_id: str) -> ApplicationAttempt | None:
+        """The newest attempt for a job that has not reached a terminal state.
+
+        Terminal attempts are not in flight, so a job whose attempt finished or
+        failed may be applied to again. A crashed attempt is not terminal: it
+        stays reclaimable, so it keeps the job closed.
+        """
+        row = (
+            await self._session.scalars(
+                select(ApplicationAttemptRow)
+                .where(
+                    ApplicationAttemptRow.job_id == job_id,
+                    ApplicationAttemptRow.workflow_state.not_in(
+                        [state.value for state in WORKFLOW_TERMINAL]
+                    ),
+                )
+                .order_by(ApplicationAttemptRow.started_at.desc())
+                .limit(1)
+            )
+        ).first()
         return _to_record(row) if row else None
 
     async def list_for_application(self, application_id: str) -> list[ApplicationAttempt]:

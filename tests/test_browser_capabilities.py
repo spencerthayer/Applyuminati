@@ -30,7 +30,7 @@ from applyuminati.browser.selection import evaluate_backends, select_browser
 from applyuminati.core.errors import BackendUnavailableError
 from applyuminati.core.platform import PLATFORM_OVERRIDE_ENV, current_platform
 from applyuminati.core.registry import HealthReport, HealthState
-from applyuminati.core.settings import BrowserSettings, Settings
+from applyuminati.core.settings import BrowserSettings, ExecutionMode, Settings
 from applyuminati.plugins.browsers import ego_lite, playwright_backend
 
 ALL_PLATFORMS = frozenset({"darwin", "linux", "win32"})
@@ -131,9 +131,14 @@ def _isolated_registry():
 
 
 def _settings(tmp_path: Path, preferred: list[str]) -> Settings:
+    # These tests are about what a backend can do, including the case where no
+    # backend is configured. Pin the mode so an empty preference list is a valid
+    # configuration: autonomous submission with no browser is genuinely broken
+    # and Settings is right to refuse it.
     return Settings(
         data_dir=tmp_path / "data",
         environment="ci",
+        execution_mode=ExecutionMode.RESEARCH_ONLY,
         browser=BrowserSettings(preferred=preferred),
     )
 
@@ -370,6 +375,7 @@ def test_playwright_earns_persistent_login_only_when_storage_state_is_configured
     configured = Settings(
         data_dir=tmp_path / "data",
         environment="ci",
+        execution_mode=ExecutionMode.RESEARCH_ONLY,
         browser=BrowserSettings(playwright_storage_state=tmp_path / "state.json"),
     )
     with_state = playwright_backend.PlaywrightBackend(configured).metadata

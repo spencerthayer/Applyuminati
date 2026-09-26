@@ -13,10 +13,16 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from applyuminati.applications.driver import ApplicationDriver, DriverContext, detect_driver
+from applyuminati.applications.machine import ApplicationMachine
 from applyuminati.browser.base import BrowserCapability, BrowserSession
 from applyuminati.browser.selection import select_browser
-from applyuminati.core.errors import BackendUnavailableError, NotFoundError
+from applyuminati.core.errors import ApplyuminatiError, BackendUnavailableError, NotFoundError
 from applyuminati.core.logging import get_logger
+from applyuminati.core.models.application import (
+    ActorKind,
+    ApplicationState,
+    can_transition,
+)
 from applyuminati.core.models.execution import (
     WORKFLOW_TERMINAL,
     ApplicationAttempt,
@@ -115,6 +121,7 @@ async def _run(
         attempt_id=updated.id,
         workflow_state=updated.workflow_state.value,
     )
+    await _reconcile_application(updated, repos)
     result = {"status": updated.workflow_state.value, "attempt_id": updated.id}
     if attempt.browser_backend:
         result["selected_backend"] = attempt.browser_backend
@@ -123,6 +130,70 @@ async def _run(
         # closes what it owns, so this is a no-op on the host path.
         await _local_manager().close(attempt.id)
     return result
+
+
+#: Terminal workflow state to the Application states it can earn, best first.
+#: The table is consulted because the legal targets depend on where the
+#: application already is: an application abandoned mid-flight is APPLYING,
+#: which may be withdrawn but not skipped.
+#:
+#: FAILED is absent on purpose: the attempt carries the failure detail, and
+#: moving the application would discard the reason the user needs to see.
+_TERMINAL_TO_APPLICATION: dict[WorkflowState, tuple[ApplicationState, ...]] = {
+    WorkflowState.COMPLETED: (ApplicationState.SUBMITTED,),
+    WorkflowState.CANCELLED: (ApplicationState.WITHDRAWN, ApplicationState.SKIPPED),
+}
+
+
+async def _reconcile_application(attempt: ApplicationAttempt, repos: Repositories) -> None:
+    """Move the Application when an attempt reaches a terminal state.
+
+    The two aggregates are deliberately separate: one is what the executor is
+    doing, the other is the hiring process. Without this step a confirmed
+    submission never appeared as SUBMITTED and every pipeline counter was
+    wrong. A pause is not an outcome, so WAITING_FOR_HUMAN changes nothing.
+
+    A rejected transition is logged, not raised: the attempt is the record of
+    truth and losing it to an illegal transition would be worse than a stale
+    application row.
+    """
+    candidates = _TERMINAL_TO_APPLICATION.get(attempt.workflow_state)
+    if candidates is None:
+        return
+    application = await repos.applications.get(attempt.application_id)
+    if application is None:
+        return
+    target = next((c for c in candidates if can_transition(application.state, c)), None)
+    if target is None or application.state is target:
+        return
+    try:
+        event = ApplicationMachine().transition(
+            application,
+            target,
+            actor=ActorKind.SYSTEM,
+            actor_detail=f"attempt:{attempt.id}",
+            reason=f"attempt.{attempt.workflow_state.value}",
+            message=f"application attempt {attempt.id} reached {attempt.workflow_state.value}",
+            task_id=attempt.id,
+        )
+    except ApplyuminatiError as exc:
+        log.warning(
+            "attempt.application_not_reconciled",
+            attempt_id=attempt.id,
+            application_id=attempt.application_id,
+            from_state=application.state.value,
+            to_state=target.value,
+            error=exc.code,
+        )
+        return
+    await repos.applications.append_event(event)
+    await repos.applications.save(application)
+    log.info(
+        "attempt.application_reconciled",
+        attempt_id=attempt.id,
+        application_id=application.id,
+        state=target.value,
+    )
 
 
 async def _acquire_local(attempt: ApplicationAttempt, repos: Repositories) -> BrowserSession | None:

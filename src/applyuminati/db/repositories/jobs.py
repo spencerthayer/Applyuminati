@@ -125,6 +125,7 @@ class JobRepository:
         recommendation: str | None = None,
         min_score: float | None = None,
         states: list[str] | None = None,
+        profile_id: str | None = None,
         companies: list[str] | None = None,
         remote_modes: list[str] | None = None,
         verification: str | None = None,
@@ -149,7 +150,17 @@ class JobRepository:
         if verification:
             statement = statement.where(JobRow.verification == verification)
         if states:
-            statement = statement.where(JobRow.id.in_(select(ApplicationRow.job_id)))
+            # An application's state belongs to one profile, so the filter is
+            # always scoped to the requesting profile. With no profile there
+            # is nothing of the user's to match, so the result is empty.
+            statement = statement.where(
+                JobRow.id.in_(
+                    select(ApplicationRow.job_id).where(
+                        ApplicationRow.state.in_(states),
+                        ApplicationRow.profile_id == (profile_id or ""),
+                    )
+                )
+            )
 
         # Score-driven filters join the newest score per job; the correlated
         # max(scored_at) is portable across SQLite and PostgreSQL.

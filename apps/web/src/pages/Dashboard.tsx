@@ -1,13 +1,30 @@
-import { useDashboard } from "../api/hooks";
-import { Loading } from "../components/Feedback";
+import { useDashboard, useDiscover } from "../api/hooks";
+import { Loading, ErrorBanner } from "../components/Feedback";
 import { ScoreBar } from "../components/ScoreBar";
 
 export function Dashboard() {
   const { data: dash, isLoading } = useDashboard();
+  const discover = useDiscover();
   if (isLoading || !dash) return <Loading />;
   return (
     <div>
       <h1 style={{ marginBottom: 24 }}>Dashboard</h1>
+      <div className="filters">
+        <button onClick={() => discover.mutate({})} disabled={discover.isPending}>
+          {discover.isPending ? "Discovering…" : "Discover"}
+        </button>
+      </div>
+      {discover.isError && (
+        <ErrorBanner
+          message={discover.error instanceof Error ? discover.error.message : String(discover.error)}
+        />
+      )}
+      {discover.data && (
+        <p style={{ marginBottom: 16, color: "var(--text-muted)" }}>
+          {`${discover.data.jobs_discovered} discovered, ${discover.data.jobs_created} new`}
+          {discover.data.failures.length ? ` · ${discover.data.failures.length} failure(s)` : ""}
+        </p>
+      )}
       <div className="grid grid-4">
         <div className="card stat"><div className="num">{dash.total_jobs}</div><div className="label">Discovered</div></div>
         <div className="card stat"><div className="num">{dash.shortlisted}</div><div className="label">Shortlisted</div></div>

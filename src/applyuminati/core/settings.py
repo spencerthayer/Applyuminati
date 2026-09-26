@@ -39,8 +39,13 @@ CONFIG_FILENAME = "config.toml"
 class ExecutionMode(StrEnum):
     """How far Applyuminati is permitted to go without asking.
 
-    ``AUTONOMOUS_SUBMIT`` is a first-class supported mode, but it is never the
-    default: enabling it is an explicit, recorded configuration act.
+    ``AUTONOMOUS_SUBMIT`` is the default. The guard rails that make it safe
+    are unconditional and are not governed by this setting: the fabrication
+    guard refuses content asserting facts absent from the profile, CAPTCHA
+    and login walls are detected and handed to a human rather than defeated,
+    and submission is fingerprinted so a role cannot be submitted twice. The
+    softer modes exist for a user who wants a tighter leash, not because
+    autonomous is unsafe by default.
     """
 
     RESEARCH_ONLY = "research_only"
@@ -253,7 +258,9 @@ class ServerSettings(BaseModel):
     #: Extra browser origins allowed to call the API. The bundled UI is served
     #: same-origin, so this stays empty in the default Docker deployment.
     cors_origins: list[str] = Field(default_factory=list)
-    #: Directory of built web assets. Served at ``/`` when present.
+    #: Directory of built web assets. Served at ``/`` when present. ``None``
+    #: auto-detects: a checkout finds ``apps/web/dist`` beside the package, and
+    #: an install with no assets serves the API alone.
     web_dist: Path | None = None
 
 
@@ -346,7 +353,7 @@ class Settings(BaseSettings):
     environment: Literal["local", "docker", "ci"] = "local"
     log_level: str = "INFO"
     log_format: LogFormat = LogFormat.CONSOLE
-    execution_mode: ExecutionMode = ExecutionMode.RESEARCH_ONLY
+    execution_mode: ExecutionMode = ExecutionMode.AUTONOMOUS_SUBMIT
 
     server: ServerSettings = Field(default_factory=ServerSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
@@ -369,7 +376,7 @@ class Settings(BaseSettings):
             init_settings,
             env_settings,
             dotenv_settings,
-            _TomlConfigSource(settings_cls),
+            _TomlConfigSource(settings_cls, getattr(init_settings, "init_kwargs", None)),
             file_secret_settings,
         )
 
@@ -539,14 +546,24 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
     the data directory itself can be overridden by env var.
     """
 
+    def __init__(self, settings_cls: type[Any], init_kwargs: dict[str, Any] | None = None) -> None:
+        super().__init__(settings_cls)
+        self._init_kwargs = init_kwargs or {}
+
     def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
         raise NotImplementedError  # pragma: no cover - not used by __call__
 
     def __call__(self) -> dict[str, Any]:
         import os
 
+        # An explicitly passed data_dir wins over the environment. Reading only
+        # the env var made Settings(data_dir=...) silently ignore the config file
+        # beside it, which is how tests and any programmatic embed were broken.
         raw_dir = os.environ.get("APPLYUMINATI_DATA_DIR")
         data_dir = Path(raw_dir).expanduser() if raw_dir else DEFAULT_DATA_DIR
+        override = self._init_kwargs.get("data_dir")
+        if override is not None:
+            data_dir = Path(override).expanduser()
         path = data_dir / CONFIG_FILENAME
         if not path.is_file():
             return {}

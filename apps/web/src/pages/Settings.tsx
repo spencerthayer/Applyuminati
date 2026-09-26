@@ -1,7 +1,10 @@
+import { useEffect, useMemo, useState } from "react";
 import { useSources, useToggleSource, useSettings, useBackendHealth } from "../api/hooks";
-import { Loading } from "../components/Feedback";
+import { Loading, ErrorBanner } from "../components/Feedback";
 import { HealthDot } from "../components/HealthDot";
 import { useUpdateStrategy } from "../api/hooks";
+import { buildOptionsBody, formatOptionValue, readOptionFields } from "../lib/options";
+import type { JsonObject, SourceInfo } from "../api/types";
 
 export function Settings() {
   const { data: sources, isLoading: srcLoading } = useSources();
@@ -10,9 +13,14 @@ export function Settings() {
   const toggleSrc = useToggleSource();
   const strategyMut = useUpdateStrategy();
   if (srcLoading) return <Loading />;
+  const configurable = (sources ?? []).filter((src) => readOptionFields(src.options_schema).length > 0);
   return (
     <div>
       <h1 style={{ marginBottom: 24 }}>Settings</h1>
+
+      {toggleSrc.isError && (
+        <ErrorBanner message={toggleSrc.error instanceof Error ? toggleSrc.error.message : String(toggleSrc.error)} />
+      )}
 
       {settings && (
         <div className="card">
@@ -58,6 +66,24 @@ export function Settings() {
         </tbody></table>
       </div>
 
+      {/*
+        One form per source that publishes an `options_schema`. The fields come
+        from the plugin itself, so a new source — or a new option on an existing
+        one — appears here with no change to this file.
+      */}
+      {configurable.map((src) => (
+        <div className="card" key={src.slug}>
+          <h3>{src.name} options</h3>
+          <SourceOptions
+            source={src}
+            saving={toggleSrc.isPending}
+            onSave={(options) =>
+              toggleSrc.mutate({ slug: src.slug, enabled: src.enabled, options })
+            }
+          />
+        </div>
+      ))}
+
       {backends && (
         <div className="card">
           <h3>Browser & Agent Backends</h3>
@@ -80,6 +106,77 @@ export function Settings() {
           <StrategySlider label="Minimum fit score" value={settings.strategy.minimum_fit_score} min={0} max={1} step={0.05} onChange={(v) => strategyMut.mutate({ strategy: { ...settings.strategy, minimum_fit_score: v } })} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The editable half of one source: a control per schema property, and a save
+ * that hands the whole options object back to the server.
+ *
+ * Options can only be written through the enable endpoint, so a disabled
+ * source shows its fields read-only with a note rather than a save button that
+ * would silently re-enable it.
+ */
+function SourceOptions({ source, onSave, saving }: {
+  source: SourceInfo;
+  onSave: (options: JsonObject) => void;
+  saving: boolean;
+}) {
+  const fields = useMemo(() => readOptionFields(source.options_schema), [source.options_schema]);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    setDraft(
+      Object.fromEntries(
+        fields.map((field) => [field.name, formatOptionValue(field, source.options[field.name])]),
+      ),
+    );
+    // Re-seeded whenever the server reports different options for this source.
+  }, [fields, source.options]);
+
+  if (!source.enabled) {
+    return (
+      <div>
+        {fields.map((field) => (
+          <div key={field.name} style={{ marginBottom: 12 }}>
+            <label htmlFor={`${source.slug}-${field.name}`}>{field.label}</label>
+            <input
+              id={`${source.slug}-${field.name}`}
+              value={draft[field.name] ?? ""}
+              disabled
+              onChange={(e) => setDraft({ ...draft, [field.name]: e.target.value })}
+            />
+          </div>
+        ))}
+        <p style={{ color: "var(--text-muted)" }}>Enable this source to configure its options.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {fields.map((field) => (
+        <div key={field.name} style={{ marginBottom: 12 }}>
+          <label htmlFor={`${source.slug}-${field.name}`}>{field.label}</label>
+          <input
+            id={`${source.slug}-${field.name}`}
+            value={draft[field.name] ?? ""}
+            placeholder={field.kind === "list" ? "comma-separated" : undefined}
+            disabled={saving}
+            onChange={(e) => setDraft({ ...draft, [field.name]: e.target.value })}
+          />
+          {field.description && (
+            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{field.description}</div>
+          )}
+        </div>
+      ))}
+      <button
+        disabled={saving}
+        onClick={() => onSave(buildOptionsBody(fields, draft, source.options))}
+      >
+        Save options
+      </button>
     </div>
   );
 }

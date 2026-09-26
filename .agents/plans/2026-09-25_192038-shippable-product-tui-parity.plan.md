@@ -215,12 +215,12 @@ If the same action fails again without new evidence, do not repeat it unchanged.
 
 | Field | Current state |
 |---|---|
-| Phase | Implementation started. 1 of 25 tasks complete. |
-| Active task | None. `t01` closed. |
-| Last confirmed result | **t01 pass.** `tests/test_attempt_worker_persistence.py` fails with `database is locked` in 10.67s on unfixed source, passes in 0.23s with the fix. Suite: `1 failed, 427 passed` in 43.78s, sole failure the pre-existing `test_ego_lite` (t08). `ruff format --check` clean, `ruff check` clean, `lint-imports` 4 kept, `pyright` 0 errors. End-to-end smoke: real Lever job reached `waiting_for_human` on an `ambiguous_question`, `browser_backend=playwright` and `browser_session_id` persisted, task `succeeded` in 1.42s. See §7. |
-| Current approach | Fix proven defects first, then ship, then build the TUI, then close WebUI parity, then lock all three to one manifest. Unchanged. |
-| Blockers / open decisions | None blocking. Two decisions already confirmed by the user (§1). PyPI project name and owner must be confirmed before the first publish. |
-| Next action | `t02-add-apply-endpoint`, now unblocked. Give the user a way to start an application: `AttemptService.start_for_job`, `POST /api/v1/jobs/{id}/apply`, and an `applications` CLI group. |
+| Phase | Implementation in progress. 13 of 25 tasks complete and committed. |
+| Active task | Six TUI screen tasks (t14-t19) and the WebUI parity task (t21-t23) running in parallel as subagents. |
+| Last confirmed result | Suite **490 passed, 0 failed** at commit 1682603. t01-t04, t06-t13 done. Full quick start verified from an installed wheel in a clean Python 3.12 venv: `init` migrates to 4f2c1b90e7a1 and prints a generated password, a string-location JSON Resume imports, and discover -> score -> applications list works against a live Lever tenant configured only through config.toml. |
+| Current approach | Unchanged. Screens and the WebUI are delegated in parallel; the lead owns app.py, conftest, and the final wiring. |
+| Blockers / open decisions | PyPI project name, owner, and Trusted Publisher still need a human before the first real publish (t11). |
+| Next action | Collect the seven subagent results, wire the screens into `tui/app.py` navigation, run t20 (headless screen tests) and t24 (WebUI tests), then t25 (parity manifest). Then verify, open a PR, and run the review/CI loop. |
 
 ---
 

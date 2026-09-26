@@ -4,7 +4,7 @@ overview: Make Applyuminati installable and genuinely usable by fixing the prove
 todos:
   - id: t01-fix-worker-lock
     content: Fix the worker database-is-locked deadlock
-    status: pending
+    status: completed
     dependencies: []
   - id: t02-add-apply-endpoint
     content: Add the start-an-application service, API route, and CLI command
@@ -215,12 +215,12 @@ If the same action fails again without new evidence, do not repeat it unchanged.
 
 | Field | Current state |
 |---|---|
-| Phase | Planning complete; implementation not started |
-| Active task | None |
-| Last confirmed result | Investigation only. Test suite: 426 passed, 1 failed (`tests/test_ego_lite.py:334`, environment-coupled) in 48.67s. Live Greenhouse discovery 200/194/6. Apply engine reached `waiting_for_human` when driven manually. Worker lock bug reproduced 3x. See §8. |
-| Current approach | Fix proven defects first, then ship, then build the TUI, then close WebUI parity, then lock all three to one manifest. |
+| Phase | Implementation started. 1 of 25 tasks complete. |
+| Active task | None. `t01` closed. |
+| Last confirmed result | **t01 pass.** `tests/test_attempt_worker_persistence.py` fails with `database is locked` in 10.67s on unfixed source, passes in 0.23s with the fix. Suite: `1 failed, 427 passed` in 43.78s, sole failure the pre-existing `test_ego_lite` (t08). `ruff format --check` clean, `ruff check` clean, `lint-imports` 4 kept, `pyright` 0 errors. End-to-end smoke: real Lever job reached `waiting_for_human` on an `ambiguous_question`, `browser_backend=playwright` and `browser_session_id` persisted, task `succeeded` in 1.42s. See §7. |
+| Current approach | Fix proven defects first, then ship, then build the TUI, then close WebUI parity, then lock all three to one manifest. Unchanged. |
 | Blockers / open decisions | None blocking. Two decisions already confirmed by the user (§1). PyPI project name and owner must be confirmed before the first publish. |
-| Next action | `t01-fix-worker-lock` — it has no dependencies and every later verification depends on it. |
+| Next action | `t02-add-apply-endpoint`, now unblocked. Give the user a way to start an application: `AttemptService.start_for_job`, `POST /api/v1/jobs/{id}/apply`, and an `applications` CLI group. |
 
 ---
 
@@ -231,7 +231,7 @@ The flowchart is the dependency authority. A `◐` or `☑` node with an edge fr
 ```mermaid
 flowchart TD
   subgraph unblock [Unblock - proven defects]
-    t01_fix_worker_lock("☐ t01-fix-worker-lock<br/>Fix the worker database-is-locked deadlock")
+    t01_fix_worker_lock("☑ t01-fix-worker-lock<br/>Fix the worker database-is-locked deadlock")
     t02_add_apply_endpoint("☐ t02-add-apply-endpoint<br/>Add the start-an-application service, route, and command")
     t03_link_attempt_to_application("☐ t03-link-attempt-to-application<br/>Propagate a terminal attempt to Application state")
     t04_sync_sources_from_settings("☐ t04-sync-sources-from-settings<br/>Call sync_from_settings on startup")
@@ -303,6 +303,7 @@ flowchart TD
   classDef runtime fill:#ffedd5,stroke:#ea580c,color:#111827
   classDef gate fill:#111827,stroke:#f59e0b,color:#f8fafc
   class t03_link_attempt_to_application,t08_fix_uncoupled_ego_test,t09_forward_job_state_filter,t07_accept_string_location evidence
+  style t01_fix_worker_lock stroke-width:4px
   class t01_fix_worker_lock,t02_add_apply_endpoint,t04_sync_sources_from_settings,t05_first_run_init,t06_serve_web_dist_default,t10_default_autonomous_submit,t13_tui_scaffold,t25_parity_contract data
   class t14_tui_jobs_screen,t15_tui_job_detail_apply,t16_tui_needs_you_screen,t17_tui_dashboard_screen,t18_tui_sources_settings_screen,t19_tui_profile_screen,t20_tui_headless_test_suite,t21_web_missing_actions,t22_web_applications_page,t23_web_source_options_and_prefs,t24_web_parity_tests runtime
   style unblock fill:#f5f3ff,stroke:#7c3aed,color:#111827
@@ -370,7 +371,17 @@ Every task below is one `file:line`-anchored change with a full test-then-implem
 
 ---
 
-### t01-fix-worker-lock
+### t01-fix-worker-lock (DONE)
+
+**Outcome (2026-09-26):** complete. AC-1 satisfied. Two deviations from the plan
+text, both recorded in §7: the test had to go through `TaskWorker.run_once` rather
+than call the handler directly, and it had to bind the process container to the
+fixture's database. The sketch in this task below is superseded by
+`tests/test_attempt_worker_persistence.py`; keep it as the shape, not the fixture.
+
+**Shipped change:** `await self._session.commit()` in `claim_next` and in
+`reclaim_expired_leases`, plus the module docstring. 12 insertions, 2 deletions
+in one file.
 
 **Objective:** Make the attempt worker able to persist, by committing the claim before the handler runs.
 
@@ -402,7 +413,9 @@ from applyuminati.tasks.queue import TaskQueue
 from applyuminati.tasks.worker import TaskWorker
 
 
-async def test_worker_run_once_persists_the_attempt(container: ServiceContainer, seeded_application) -> None:
+async def test_worker_run_once_persists_the_attempt(
+    container: ServiceContainer, seeded_application
+) -> None:
     """AC-1: a claimed task must not hold a write lock that blocks the handler.
 
     Regression for the observed failure:
@@ -505,7 +518,9 @@ from applyuminati.api.app import create_app
 from applyuminati.core.errors import ApplyuminatiError
 
 
-async def test_start_application_enqueues_exactly_one_attempt(container, seeded_application) -> None:
+async def test_start_application_enqueues_exactly_one_attempt(
+    container, seeded_application
+) -> None:
     application, job = seeded_application
     async with container.repositories() as repos:
         profile = await repos.profiles.get_active()
@@ -545,46 +560,43 @@ Expected: FAIL — `AttributeError: 'AttemptService' object has no attribute 'st
 Add to `AttemptService` in `src/applyuminati/services/attempt_service.py`, beside `create`:
 
 ```python
-    async def start_for_job(
-        self,
-        *,
-        job_id: str,
-        profile: CareerProfile | None,
-        mode: ExecutionMode,
-    ) -> ApplicationAttempt:
-        """Create the attempt for a job and queue it. The only user entry point.
+async def start_for_job(
+    self,
+    *,
+    job_id: str,
+    profile: CareerProfile | None,
+    mode: ExecutionMode,
+) -> ApplicationAttempt:
+    """Create the attempt for a job and queue it. The only user entry point.
 
-        Job-centric because that is what a user selects. The Application row is
-        ensured rather than required, so a job that has not been scored can
-        still be applied to. Re-entry is refused while an attempt for the same
-        job is still in flight, which is what keeps the idempotency fingerprint
-        meaningful.
-        """
-        job = await self._repos.jobs.get(job_id)
-        if job is None:
-            raise NotFoundError(f"job {job_id} not found", code="resource_gone.job")
-        if profile is None:
-            profile = await self._repos.profiles.get_active()
-        if profile is None:
-            raise ConfigurationError(
-                "import a career profile before applying",
-                code="configuration.profile_missing",
-            )
-
-        existing = await self._repos.attempts.active_for_job(job_id)
-        if existing is not None:
-            raise ConflictError(
-                f"an application for this job is already in progress "
-                f"({existing.workflow_state.value})",
-                code="conflict.attempt_in_flight",
-            )
-
-        application = await self._repos.applications.ensure(job_id, profile.id)
-        attempt = await self.create(
-            application_id=application.id, job=job, profile=profile, mode=mode
+    Job-centric because that is what a user selects. The Application row is
+    ensured rather than required, so a job that has not been scored can
+    still be applied to. Re-entry is refused while an attempt for the same
+    job is still in flight, which is what keeps the idempotency fingerprint
+    meaningful.
+    """
+    job = await self._repos.jobs.get(job_id)
+    if job is None:
+        raise NotFoundError(f"job {job_id} not found", code="resource_gone.job")
+    if profile is None:
+        profile = await self._repos.profiles.get_active()
+    if profile is None:
+        raise ConfigurationError(
+            "import a career profile before applying",
+            code="configuration.profile_missing",
         )
-        await self.enqueue_resume(attempt)
-        return attempt
+
+    existing = await self._repos.attempts.active_for_job(job_id)
+    if existing is not None:
+        raise ConflictError(
+            f"an application for this job is already in progress ({existing.workflow_state.value})",
+            code="conflict.attempt_in_flight",
+        )
+
+    application = await self._repos.applications.ensure(job_id, profile.id)
+    attempt = await self.create(application_id=application.id, job=job, profile=profile, mode=mode)
+    await self.enqueue_resume(attempt)
+    return attempt
 ```
 
 This depends on two members that may not exist yet — check and add them if absent:
@@ -604,9 +616,7 @@ async def apply_to_job(
     async with container.repositories() as repos:
         svc = AttemptService(repos)
         try:
-            attempt = await svc.start_for_job(
-                job_id=job_id, profile=None, mode=request.mode
-            )
+            attempt = await svc.start_for_job(job_id=job_id, profile=None, mode=request.mode)
         except NotFoundError as exc:
             raise HTTPException(status_code=404, detail=exc.message) from exc
         except ConfigurationError as exc:
@@ -707,7 +717,7 @@ Use `ApplicationMachine.transition` with `actor=ActorKind.SYSTEM` so the event l
 ```python
 async def test_config_file_configures_sources(tmp_path) -> None:
     (tmp_path / "config.toml").write_text(
-        '[discovery.sources.greenhouse]\nenabled = true\n\n'
+        "[discovery.sources.greenhouse]\nenabled = true\n\n"
         '[discovery.sources.greenhouse.options]\nboards = ["example"]\n'
     )
     settings = Settings(data_dir=tmp_path)
@@ -823,7 +833,7 @@ def test_import_accepts_a_plain_string_location() -> None:
         "basics": {"name": "Test", "label": "Engineer", "location": "Austin, TX"},
         "skills": [],
     }
-    resume = JsonResume.model_validate(doc)   # must not raise
+    resume = JsonResume.model_validate(doc)  # must not raise
     assert resume.basics is not None
     assert resume.basics.location is not None
 ```
@@ -1060,6 +1070,7 @@ Run `uv run lint-imports` and `uv run ruff check .`. Expected: clean.
 ```python
 async def test_tui_app_starts_headless() -> None:
     from applyuminati.tui.app import TuiApp
+
     app = TuiApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -1250,8 +1261,8 @@ Add a search `Input` above the table and re-run `load_jobs` on `Input.Changed` w
 async def test_apply_from_detail_creates_an_attempt(container, seeded_application) -> None:
     app = TuiApp(container)
     async with app.run_test(size=(140, 40)) as pilot:
-        await pilot.press("enter")          # open detail for the first row
-        await pilot.press("a")              # apply
+        await pilot.press("enter")  # open detail for the first row
+        await pilot.press("a")  # apply
         await pilot.pause()
     async with container.read_repositories() as repos:
         tasks, _ = await repos.tasks.list()
@@ -1526,37 +1537,126 @@ class Capability:
 
 
 CAPABILITIES: tuple[Capability, ...] = (
-    Capability("list-jobs", "Browse discovered jobs", "jobs list",
-               "GET /api/v1/jobs", "tui:screens.jobs", "/jobs"),
-    Capability("job-detail", "Inspect one job", None,
-               "GET /api/v1/jobs/{id}", "tui:screens.job_detail", "/jobs/:id"),
-    Capability("discover", "Run a discovery run", "jobs discover",
-               "POST /api/v1/jobs/discover", "tui:screens.jobs", "/jobs"),
-    Capability("score", "Score jobs against the profile", "jobs score",
-               "POST /api/v1/jobs/score", "tui:screens.jobs", "/jobs"),
-    Capability("apply", "Start an application", "applications apply",
-               "POST /api/v1/jobs/{id}/apply", "tui:screens.job_detail", "/jobs/:id"),
-    Capability("needs-you", "See human handoffs", None,
-               "GET /api/v1/needs-you", "tui:screens.needs_you", "/needs-you"),
-    Capability("resolve-handoff", "Resolve a handoff", None,
-               "POST /api/v1/needs-you/{attempt}/{intervention}",
-               "tui:screens.needs_you", "/needs-you"),
-    Capability("import-profile", "Import a JSON Resume", "profile import",
-               "POST /api/v1/profile/import", "tui:screens.profile", "/profile"),
-    Capability("preferences", "Edit search preferences", None,
-               "PUT /api/v1/profile/preferences", "tui:screens.settings", "/profile"),
-    Capability("toggle-source", "Enable or disable a source", "sources enable",
-               "POST /api/v1/sources/{slug}/enable", "tui:screens.sources", "/settings"),
-    Capability("source-options", "Configure a source's options", "sources enable --options",
-               "POST /api/v1/sources/{slug}/enable", "tui:screens.sources", "/settings"),
-    Capability("strategy", "Edit the search strategy", None,
-               "PUT /api/v1/settings/strategy", "tui:screens.settings", "/settings"),
-    Capability("dashboard", "Pipeline overview", "status",
-               "GET /api/v1/dashboard", "tui:screens.dashboard", "/"),
-    Capability("capabilities", "Plugin maturity matrix", "capabilities",
-               None, "tui:screens.dashboard", None),
-    Capability("browser-hosts", "Pair and revoke Browser Hosts", "browser-host pair",
-               "POST /api/v1/browser-hosts/pair", None, None),
+    Capability(
+        "list-jobs",
+        "Browse discovered jobs",
+        "jobs list",
+        "GET /api/v1/jobs",
+        "tui:screens.jobs",
+        "/jobs",
+    ),
+    Capability(
+        "job-detail",
+        "Inspect one job",
+        None,
+        "GET /api/v1/jobs/{id}",
+        "tui:screens.job_detail",
+        "/jobs/:id",
+    ),
+    Capability(
+        "discover",
+        "Run a discovery run",
+        "jobs discover",
+        "POST /api/v1/jobs/discover",
+        "tui:screens.jobs",
+        "/jobs",
+    ),
+    Capability(
+        "score",
+        "Score jobs against the profile",
+        "jobs score",
+        "POST /api/v1/jobs/score",
+        "tui:screens.jobs",
+        "/jobs",
+    ),
+    Capability(
+        "apply",
+        "Start an application",
+        "applications apply",
+        "POST /api/v1/jobs/{id}/apply",
+        "tui:screens.job_detail",
+        "/jobs/:id",
+    ),
+    Capability(
+        "needs-you",
+        "See human handoffs",
+        None,
+        "GET /api/v1/needs-you",
+        "tui:screens.needs_you",
+        "/needs-you",
+    ),
+    Capability(
+        "resolve-handoff",
+        "Resolve a handoff",
+        None,
+        "POST /api/v1/needs-you/{attempt}/{intervention}",
+        "tui:screens.needs_you",
+        "/needs-you",
+    ),
+    Capability(
+        "import-profile",
+        "Import a JSON Resume",
+        "profile import",
+        "POST /api/v1/profile/import",
+        "tui:screens.profile",
+        "/profile",
+    ),
+    Capability(
+        "preferences",
+        "Edit search preferences",
+        None,
+        "PUT /api/v1/profile/preferences",
+        "tui:screens.settings",
+        "/profile",
+    ),
+    Capability(
+        "toggle-source",
+        "Enable or disable a source",
+        "sources enable",
+        "POST /api/v1/sources/{slug}/enable",
+        "tui:screens.sources",
+        "/settings",
+    ),
+    Capability(
+        "source-options",
+        "Configure a source's options",
+        "sources enable --options",
+        "POST /api/v1/sources/{slug}/enable",
+        "tui:screens.sources",
+        "/settings",
+    ),
+    Capability(
+        "strategy",
+        "Edit the search strategy",
+        None,
+        "PUT /api/v1/settings/strategy",
+        "tui:screens.settings",
+        "/settings",
+    ),
+    Capability(
+        "dashboard",
+        "Pipeline overview",
+        "status",
+        "GET /api/v1/dashboard",
+        "tui:screens.dashboard",
+        "/",
+    ),
+    Capability(
+        "capabilities",
+        "Plugin maturity matrix",
+        "capabilities",
+        None,
+        "tui:screens.dashboard",
+        None,
+    ),
+    Capability(
+        "browser-hosts",
+        "Pair and revoke Browser Hosts",
+        "browser-host pair",
+        "POST /api/v1/browser-hosts/pair",
+        None,
+        None,
+    ),
 )
 ```
 
@@ -1594,6 +1694,13 @@ Populate `cli_command` honestly. Several entries are `None` because no CLI comma
 | 2026-09-25 | Decision | — | User chose: TUI calls services **in-process**; distribution adds **PyPI**; default execution mode becomes **`autonomous_submit`**. | TUI must never call `asyncio.run` and must start the attempt worker itself. `t10` changes one default and the docs; the fabrication guard, anti-evasion rules, and idempotency fingerprint are untouched. Risk was stated before the choice and accepted. |
 | 2026-09-25 | Research: Textual version and API | A current, citable API | **pass** — stable is **8.2.8** (2026-06-30), `Development Status :: 5 - Production/Stable`, strict semver; requires `rich>=14.2.0`; `TextLog` was renamed `RichLog` in 0.32.0 and does not exist in 8.2.8. `App.run()` touches the global event loop, so it conflicts with `asyncio.run`. `DataTable` defaults to `cursor_type="cell"` and `RowSelected` requires `"row"`. | Pin `textual>=8.2,<9`; bump `rich` to `>=14.2`; use `@work` and `RichLog`; construct tables with `cursor_type="row"`. |
 | 2026-09-25 | Research: project config | Ready for TUI tests and packaging | **pass** — `asyncio_mode = "auto"` (`pyproject.toml:193`) and `pytest-asyncio>=0.25` are already configured, so `App.run_test()` works with no config change. `filterwarnings = ["error"]` will surface Textual deprecations as failures. Hatchling packages `src/applyuminati` by default, so `.tcss` files should be included — confirm in `t11`. | No test-config change needed. Verify `.tcss` packaging rather than assuming. |
+
+| 2026-09-26 | `t01`: new `tests/test_attempt_worker_persistence.py`, unfixed source | Fails with `database is locked` | **pass (expected failure)** — `1 failed in 10.67s`; `worker.task_crashed` on `UPDATE application_attempts SET browser_backend=?`; attempt left `pending`. The 10.67s matches `busy_timeout=10000` at `db/session.py:41`. | Confirms the test reproduces the production bug rather than an incidental error. |
+| 2026-09-26 | `t01`: fix applied, same test | Passes | **pass** — `1 passed in 0.23s`. 10.67s to 0.23s. Fix is two `await self._session.commit()` calls, in `claim_next` and `reclaim_expired_leases`. | None. |
+| 2026-09-26 | `t01`: full suite | `1 failed, 427 passed` | **pass** — `1 failed, 427 passed in 43.78s`. Sole failure `tests/test_ego_lite.py:334`, pre-existing and environment-coupled, tracked as `t08`. | New baseline for every later task. |
+| 2026-09-26 | `t01`: gates | All clean | **pass** — `ruff format --check` 196 files already formatted, `ruff check` all checks passed, `lint-imports` 4 contracts kept, `pyright` 0 errors. | `ruff format .` also reformats Python blocks inside `.md`, so the plan file was rewritten by the format pass. Re-validated the frontmatter and diagrams afterwards. |
+| 2026-09-26 | `t01`: end-to-end smoke, real Lever tenant `tala` | Attempt persists through the worker | **pass** — discovery 6 jobs, scored 6, attempt created, task submitted, `TaskWorker.run_once` returned `did_work=True`, log shows `attempt.browser_selected backend=playwright`, `attempt.local_session_opened`, `attempt.step_finished workflow_state=waiting_for_human`, `worker.task_succeeded duration_s=1.42`. Persisted: `browser_backend=playwright`, `browser_session_id=01M3E6HWC7Q56SMWG0EJ3X40AW`, `intervention[ambiguous_question] Question needs an answer: Full name`. | Was `worker.task_crashed` before the fix. The engine now reaches a real ATS form question and pauses. Throwaway scripts deleted. |
+| 2026-09-26 | Correction to `t01` plan text | — | The plan's `t01` test sketch passed a shared `repos`, which every existing execution test also does. That shape cannot reproduce the bug, because the handler then shares the caller's session. The real test must go through `TaskWorker.run_once` so the handler opens its own session. | Rewrote the test to the worker path. Also had to bind `set_container(ServiceContainer(settings, database=database))` to the fixture database, because the handler resolves `get_container()` and a stale singleton from an earlier test pointed elsewhere: the test passed alone and failed in the full suite until that was fixed. |
 
 ---
 

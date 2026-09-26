@@ -4,7 +4,9 @@ SQLite has no ``SELECT ... FOR UPDATE``, so claiming is done as an
 optimistic UPDATE gated on the row's current state: only one worker's update
 can affect the row, and everyone else sees ``rowcount == 0`` and moves on.
 This is the same pattern Postgres needs for a queue without advisory locks,
-so the logic transfers.
+so the logic transfers. Both the claim and the lease reclaim commit before
+returning: they are durable state transitions, and holding the write lock past
+them deadlocks the worker against the handler's own session.
 """
 
 from __future__ import annotations
@@ -78,6 +80,12 @@ class TaskRepository:
         if result.rowcount != 1:  # pragma: no cover - loses only under contention
             return None
         row = await self._session.get(TaskRow, task_id)
+        # The claim is a durable transition, not scratch state: it is what makes
+        # the lease meaningful, so a crash after this point is recovered rather
+        # than silently un-claimed. Committing here also releases the SQLite
+        # write lock before the handler opens its own session. Without it the
+        # worker deadlocks against itself and the attempt is never persisted.
+        await self._session.commit()
         return row_to_task(row) if row else None
 
     async def save(self, task: TaskRecord) -> TaskRecord:
@@ -139,7 +147,9 @@ class TaskRepository:
             task.scheduled_for = now
             task_to_row(task, row=row)
             reclaimed += 1
-        await self._session.flush()
+        # Same reasoning as the claim: reclaiming is a durable transition, and
+        # it runs on the worker's poll before any handler opens a session.
+        await self._session.commit()
         return reclaimed
 
 

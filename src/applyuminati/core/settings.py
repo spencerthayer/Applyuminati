@@ -39,8 +39,13 @@ CONFIG_FILENAME = "config.toml"
 class ExecutionMode(StrEnum):
     """How far Applyuminati is permitted to go without asking.
 
-    ``AUTONOMOUS_SUBMIT`` is a first-class supported mode, but it is never the
-    default: enabling it is an explicit, recorded configuration act.
+    ``AUTONOMOUS_SUBMIT`` is the default. The guard rails that make it safe
+    are unconditional and are not governed by this setting: the fabrication
+    guard refuses content asserting facts absent from the profile, CAPTCHA
+    and login walls are detected and handed to a human rather than defeated,
+    and submission is fingerprinted so a role cannot be submitted twice. The
+    softer modes exist for a user who wants a tighter leash, not because
+    autonomous is unsafe by default.
     """
 
     RESEARCH_ONLY = "research_only"
@@ -348,7 +353,7 @@ class Settings(BaseSettings):
     environment: Literal["local", "docker", "ci"] = "local"
     log_level: str = "INFO"
     log_format: LogFormat = LogFormat.CONSOLE
-    execution_mode: ExecutionMode = ExecutionMode.RESEARCH_ONLY
+    execution_mode: ExecutionMode = ExecutionMode.AUTONOMOUS_SUBMIT
 
     server: ServerSettings = Field(default_factory=ServerSettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)

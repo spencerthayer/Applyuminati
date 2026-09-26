@@ -160,4 +160,4 @@ def test_settings_endpoint(database) -> None:
     client = _client(database)
     r = client.get("/api/v1/settings")
     assert r.status_code == 200
-    assert r.json()["execution_mode"] == "research_only"
+    assert r.json()["execution_mode"] == "autonomous_submit"

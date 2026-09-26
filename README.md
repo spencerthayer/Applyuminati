@@ -175,7 +175,8 @@ default_model = "gpt-4o-mini"
 - **Secrets never logged.** API keys, passwords, session cookies, and sensitive application answers are redacted at the logging boundary.
 - **No fabrication.** The fabrication guard refuses generated content that asserts facts (employers, titles, dates, metrics) not present in the canonical profile.
 - **No access-control evasion.** Applyuminati detects CAPTCHAs, bot blocks, and login walls, then stops and asks for human intervention. It never attempts to defeat them.
-- **Autonomous submission is opt-in.** The default execution mode is `research_only`. Enabling `autonomous_submit` is an explicit, recorded configuration act.
+- **The guard rails are unconditional.** The default execution mode is `autonomous_submit`, but the three limits above are not governed by it. The fabrication guard, the access-control rule, and the submission fingerprint apply in every mode. Set `execution_mode` to `research_only`, `prepare_application`, or `fill_no_submit` for a tighter leash.
+- **You can see what it did.** Every attempt keeps an auditable event log and stops at a durable human handoff whenever a CAPTCHA, login, MFA, or ambiguous question appears. Nothing is submitted without that record.
 
 See [SECURITY.md](SECURITY.md) for responsible disclosure and hardening details.
 

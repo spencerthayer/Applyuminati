@@ -5,9 +5,16 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from applyuminati.api.app import create_app
+from applyuminati.core.models.application import Application, ApplicationState
+from applyuminati.core.models.job import SourceTier
+from applyuminati.core.models.jsonresume import JsonResume, ResumeBasics
+from applyuminati.core.models.profile import CareerProfile
 from applyuminati.core.settings import SecuritySettings
+from applyuminati.db.models import ProfileRow
+from applyuminati.db.repositories.jobs import JobRepository
 from applyuminati.db.session import set_database
-from applyuminati.services.container import set_container
+from applyuminati.services.container import Repositories, set_container
+from applyuminati.sources.normalize import build_job
 
 
 def _client(database, **security):
@@ -69,6 +76,84 @@ def test_jobs_list_empty(database) -> None:
     r = client.get("/api/v1/jobs")
     assert r.status_code == 200
     assert r.json()["total"] == 0
+
+
+async def _seed_job_with_application(
+    database, *, slug: str, state: ApplicationState | None, profile_id: str = "p1"
+) -> str:
+    """Persist one job, optionally with the user's application for it."""
+    job = build_job(
+        source="local_feed",
+        tier=SourceTier.AGGREGATOR,
+        source_job_id=slug,
+        url=f"https://example.com/jobs/{slug}",
+        title=f"Engineer {slug}",
+        company=f"Company {slug}",
+        apply_url=f"https://example.com/jobs/{slug}/apply",
+    )
+    async with database.session() as session:
+        await JobRepository(session).upsert(job)
+        repos = Repositories.bind(session)
+        await repos.profiles.upsert(
+            CareerProfile(
+                id=profile_id, label=profile_id, resume=JsonResume(basics=ResumeBasics(name="T"))
+            )
+        )
+        if state is not None:
+            await repos.applications.save(
+                Application(job_id=job.id, profile_id=profile_id, state=state)
+            )
+    return job.id
+
+
+async def test_jobs_list_filters_by_application_state(database) -> None:
+    """`?state=` must narrow the list, not be accepted and ignored."""
+    shortlisted = await _seed_job_with_application(
+        database, slug="a", state=ApplicationState.SHORTLISTED
+    )
+    await _seed_job_with_application(database, slug="b", state=ApplicationState.REJECTED)
+    await _seed_job_with_application(database, slug="c", state=None)
+
+    client = _client(database)
+    unfiltered = client.get("/api/v1/jobs")
+    assert unfiltered.status_code == 200
+    assert unfiltered.json()["total"] == 3
+
+    r = client.get("/api/v1/jobs", params={"state": ApplicationState.SHORTLISTED.value})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 1
+    assert [item["id"] for item in body["items"]] == [shortlisted]
+    assert body["items"][0]["application_state"] == ApplicationState.SHORTLISTED.value
+
+
+async def test_jobs_list_state_filter_ignores_another_profile(database) -> None:
+    """A state filter must resolve against the active profile only."""
+    mine = await _seed_job_with_application(
+        database, slug="mine", state=ApplicationState.SHORTLISTED
+    )
+    await _seed_job_with_application(
+        database, slug="theirs", state=ApplicationState.SHORTLISTED, profile_id="p2"
+    )
+    # There is one active profile, so the other is switched off at the row
+    # level: which of two active profiles the API picks is not defined.
+    async with database.session() as session:
+        other = await session.get(ProfileRow, "p2")
+        assert other is not None
+        other.is_active = False
+
+    client = _client(database)
+    r = client.get("/api/v1/jobs", params={"state": ApplicationState.SHORTLISTED.value})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["total"] == 1
+    assert [item["id"] for item in body["items"]] == [mine]
+
+
+def test_jobs_list_rejects_an_unknown_state(database) -> None:
+    client = _client(database)
+    r = client.get("/api/v1/jobs", params={"state": "not_a_state"})
+    assert 400 <= r.status_code < 500, r.text
 
 
 def test_settings_endpoint(database) -> None:

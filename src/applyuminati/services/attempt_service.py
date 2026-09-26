@@ -13,16 +13,24 @@ from typing import Any
 
 from applyuminati.applications.detect import detect_job
 from applyuminati.applications.driver import DriverContext, DriverOutcomeKind, detect_driver
+from applyuminati.applications.machine import ApplicationMachine
 from applyuminati.browser.base import BrowserSession, ControlOwner
 from applyuminati.browser.host_manager import BrowserHostManager
 from applyuminati.browser.host_protocol import HostCommand
 from applyuminati.core.clock import utcnow
 from applyuminati.core.errors import (
+    ApplyuminatiError,
     ConfigurationError,
     DuplicateActionError,
     NotFoundError,
 )
 from applyuminati.core.logging import get_logger
+from applyuminati.core.models.application import (
+    ActorKind,
+    Application,
+    ApplicationState,
+    can_transition,
+)
 from applyuminati.core.models.execution import (
     ApplicationAttempt,
     AttemptEventKind,
@@ -188,6 +196,7 @@ class AttemptService:
             )
 
         application = await self._repos.applications.ensure(job_id, profile.id)
+        await self._advance_to_applying(application)
         attempt = await self.create(
             application_id=application.id,
             job=job,
@@ -203,6 +212,45 @@ class AttemptService:
             mode=mode.value,
         )
         return attempt
+
+    async def _advance_to_applying(self, application: Application) -> None:
+        """Walk the application forward to APPLYING, the state a submit leaves from.
+
+        SUBMITTED is only reachable from APPLYING, and no path reaches
+        APPLYING on its own, so the attempt that begins applying is what has
+        to move it. Each hop is a legal transition and each is recorded, so the
+        event log shows the whole walk rather than one unexplained jump.
+        """
+        if application.state is ApplicationState.APPLYING:
+            return
+        path = (
+            ApplicationState.SHORTLISTED,
+            ApplicationState.PREPARING,
+            ApplicationState.READY,
+            ApplicationState.APPLYING,
+        )
+        machine = ApplicationMachine()
+        for target in path:
+            if not can_transition(application.state, target):
+                break
+            try:
+                event = machine.transition(
+                    application,
+                    target,
+                    actor=ActorKind.USER,
+                    reason="application.started",
+                    message="an application attempt was started for this job",
+                )
+            except ApplyuminatiError as exc:
+                log.warning(
+                    "attempt.application_not_advanced",
+                    application_id=application.id,
+                    to_state=target.value,
+                    error=exc.code,
+                )
+                break
+            await self._repos.applications.append_event(event)
+        await self._repos.applications.save(application)
 
     async def get(self, attempt_id: str) -> ApplicationAttempt:
         record = await self._repos.attempts.get(attempt_id)

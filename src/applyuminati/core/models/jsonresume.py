@@ -14,7 +14,7 @@ The richer canonical profile that wraps this lives in
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 _CFG = ConfigDict(extra="allow", populate_by_name=True)
 
@@ -27,6 +27,8 @@ class ResumeLocation(BaseModel):
     city: str | None = None
     countryCode: str | None = None
     region: str | None = None
+    #: The whole location as free text, set when the spec's string form is used.
+    raw: str | None = None
 
 
 class ResumeProfile(BaseModel):
@@ -49,6 +51,14 @@ class ResumeBasics(BaseModel):
     summary: str | None = None
     location: ResumeLocation | None = None
     profiles: list[ResumeProfile] = Field(default_factory=list)
+
+    @field_validator("location", mode="before")
+    @classmethod
+    def _accept_string_location(cls, value: object) -> object:
+        """The spec allows ``basics.location`` to be a bare string as well as an object."""
+        if isinstance(value, str):
+            return ResumeLocation(raw=value)
+        return value
 
 
 class ResumeWork(BaseModel):

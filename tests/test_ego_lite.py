@@ -16,7 +16,9 @@ from pathlib import Path
 import pytest
 
 from applyuminati.browser.base import BrowserCheckpoint, ControlOwner
+from applyuminati.core.registry import HealthState
 from applyuminati.core.settings import Settings
+from applyuminati.plugins.browsers import ego_lite
 from applyuminati.plugins.browsers.ego_lite import (
     RESULT_KEY,
     TASK_SPACE_PREFIX,
@@ -327,8 +329,53 @@ def test_the_envelope_is_found_among_other_output() -> None:
     assert envelope["value"] == 3
 
 
-async def test_a_backend_without_the_helper_is_not_selectable(settings) -> None:
-    """CI runs on Linux, where health must say so rather than try to run it."""
+async def test_a_backend_on_an_unsupported_platform_is_not_selectable(
+    settings, monkeypatch
+) -> None:
+    """Health must say the app cannot run here rather than try to run it.
+
+    Asserted on the reported state and facts rather than the sentence: the
+    wording is a user-facing line, not the behaviour under test.
+    """
+    monkeypatch.setattr(ego_lite, "current_platform", lambda: "linux")
+
+    def _never_run(*args: object, **kwargs: object) -> object:
+        raise AssertionError("health must not spawn the helper on an unsupported platform")
+
+    monkeypatch.setattr(ego_lite, "_run_helper", _never_run)
+
     report = await EgoLiteBackend(settings).health()
     assert not report.usable
-    assert "macOS" in report.detail
+    assert report.state is HealthState.NOT_INSTALLED
+    assert report.facts["platform"] == "linux"
+    assert report.detail.strip()
+
+
+async def test_a_helper_that_cannot_pass_its_smoke_check_is_not_selectable(
+    settings, monkeypatch
+) -> None:
+    """A helper that is installed but does not work is still unusable.
+
+    This is the case on a developer's Mac: the binary is present, so the
+    failure is reported as unavailable rather than not installed, and the
+    detail has to say which binary failed rather than name a platform.
+    """
+    monkeypatch.setattr(ego_lite, "current_platform", lambda: "darwin")
+    monkeypatch.setattr(
+        ego_lite,
+        "locate_helper",
+        lambda _settings: (Path("/nonexistent/ego-browser"), "PATH (with ~/.local/bin prepended)"),
+    )
+
+    async def _failing(*args: object, **kwargs: object) -> HelperRun:
+        return HelperRun(
+            returncode=1, stdout="", stderr="the smoke script blew up", duration_ms=1.0
+        )
+
+    monkeypatch.setattr(ego_lite, "_run_helper", _failing)
+
+    report = await EgoLiteBackend(settings).health()
+    assert not report.usable
+    assert report.state is HealthState.UNAVAILABLE
+    assert report.facts["exit_code"] == 1
+    assert report.detail.strip()

@@ -12,6 +12,7 @@ from applyuminati.core.errors import (
     DuplicateActionError,
     NotFoundError,
 )
+from applyuminati.core.models.application import ApplicationState
 from applyuminati.core.models.common import RemoteMode
 from applyuminati.core.models.job import VerificationState
 from applyuminati.core.models.scoring import Recommendation
@@ -28,7 +29,7 @@ async def list_jobs(
     source: list[str] = Query(default_factory=list),
     recommendation: Recommendation | None = Query(None),
     min_score: float | None = Query(None, ge=0.0, le=1.0),
-    state: list[str] = Query(default_factory=list),
+    state: list[ApplicationState] = Query(default_factory=list),
     company: list[str] = Query(default_factory=list),
     remote_mode: RemoteMode | None = Query(None),
     verification: VerificationState | None = Query(None),
@@ -44,7 +45,7 @@ async def list_jobs(
         sources=source or None,
         recommendation=recommendation,
         min_score=min_score,
-        states=None,
+        states=state or None,
         companies=company or None,
         remote_modes=[remote_mode] if remote_mode else None,
         verification=verification,

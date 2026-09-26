@@ -13,8 +13,8 @@ from applyuminati.core.errors import (
     NotFoundError,
 )
 from applyuminati.core.models.execution import WorkflowState
-from applyuminati.core.models.jsonresume import JsonResume, ResumeBasics
 from applyuminati.core.models.job import Job, SourceTier
+from applyuminati.core.models.jsonresume import JsonResume, ResumeBasics
 from applyuminati.core.models.profile import CareerProfile
 from applyuminati.core.settings import ExecutionMode, SecuritySettings
 from applyuminati.db.repositories.jobs import JobRepository

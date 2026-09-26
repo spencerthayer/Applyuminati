@@ -9,6 +9,7 @@ import pytest
 
 from applyuminati.core.settings import Settings
 from applyuminati.db.session import Database, set_database
+from applyuminati.services.container import get_container
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -31,6 +32,22 @@ async def database(settings: Settings) -> AsyncIterator[Database]:
     yield db
     await db.dispose()
     set_database(None)
+
+
+@pytest.fixture
+async def container(settings: Settings, database: Database):
+    """A ServiceContainer bound to this test's database.
+
+    Process-wide singletons are reset either side, so one test's container
+    cannot serve another test's data.
+    """
+    from applyuminati.services.container import ServiceContainer, set_container
+
+    set_container(ServiceContainer(settings, database=database))
+    try:
+        yield get_container()
+    finally:
+        set_container(None)
 
 
 @pytest.fixture

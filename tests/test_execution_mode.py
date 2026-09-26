@@ -57,6 +57,6 @@ def test_autonomous_mode_still_flags_fabricated_content(tmp_path: Path) -> None:
         ],
     )
     report = FabricationGuard(profile).check(fabricated)
-    assert any(v.severity is GuardSeverity.HARD for v in report.violations), (
-        [(v.kind, v.path) for v in report.violations]
-    )
+    assert any(v.severity is GuardSeverity.HARD for v in report.violations), [
+        (v.kind, v.path) for v in report.violations
+    ]

@@ -162,3 +162,32 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       push: true
+
+  # -------------------------------------------------------------------------
+  # PyPI distribution
+  # -------------------------------------------------------------------------
+  # The same gate as the image release: `needs` every validation job, no
+  # pull_request, and a publishable ref only. pypi.yml is called rather than
+  # triggered, so there is no second, ungated path to an upload.
+  #
+  # `publish: false` means this job builds the wheel and sdist and runs the
+  # metadata check on every main merge and every tag, and uploads nothing. The
+  # first real publish flips that single value to true; nothing else changes.
+  pypi:
+    name: PyPI distribution
+    needs: [python, web, docker]
+    if: >-
+      github.event_name != 'pull_request' &&
+      (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    # A called workflow cannot widen the token permissions it is handed: it
+    # gets the intersection of what the caller grants and what it declares.
+    # Declaring `id-token: write` only in pypi.yml would therefore mint no
+    # OIDC token, and the upload step would fail against PyPI instead, so the
+    # grant has to live here. This is the one job in CI holding upload
+    # authority, and it is still behind `needs` and the ref gate above.
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/pypi.yml
+    with:
+      publish: false

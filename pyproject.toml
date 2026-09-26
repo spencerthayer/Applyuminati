@@ -25,16 +25,23 @@ dependencies = [
   "pydantic>=2.10",
   "pydantic-settings>=2.7",
   "python-dotenv>=1.0",
-  "rich>=13.9",
-  "sqlalchemy>=2.0.36",
+  "rich>=14.2",
   "structlog>=24.4",
   "typer>=0.15",
-  "uvicorn[standard]>=0.34",
+  # The asyncio extra, not bare sqlalchemy: the repositories use AsyncSession
+  # throughout, and without greenlet the wheel installs cleanly and then dies
+  # on the first import of applyuminati.db. The dev environment never caught
+  # this because `--all-extras` drags in playwright, which pulls greenlet in
+  # by its own accord.
+  "sqlalchemy[asyncio]>=2.0.36",
   "websockets>=14.0",
 ]
 
 [project.optional-dependencies]
 browser = ["playwright>=1.49"]
+# Terminal UI. Kept out of the base dependencies so a headless server or
+# container image does not pull a TUI it never runs.
+tui = ["textual>=8.2,<9"]
 
 [project.scripts]
 applyuminati = "applyuminati.cli.main:app"
@@ -147,6 +154,8 @@ ignore = [
 "tests/**" = ["ANN", "ASYNC109", "S105", "S106", "PLR0915"]
 "src/applyuminati/cli/**" = ["T20", "B008", "ASYNC240"]
 "src/applyuminati/host/**" = ["T20", "B008"]
+# The TUI builds option defaults and prints status the way the CLI does.
+"src/applyuminati/tui/**" = ["T20", "B008", "ASYNC240"]
 # Closed HostCommand switch: one branch per protocol verb is the point.
 "src/applyuminati/host/dispatcher.py" = ["T20", "B008", "PLR0911", "PLR0912", "PLR0915"]
 # Shared ATS form flow: each early return is a typed workflow outcome.
@@ -214,7 +223,7 @@ include_external_packages = true
 name = "Layered architecture (higher layers may import lower layers only)"
 type = "layers"
 layers = [
-  "applyuminati.cli | applyuminati.api | applyuminati.host",
+  "applyuminati.cli | applyuminati.api | applyuminati.host | applyuminati.tui",
   "applyuminati.services",
   "applyuminati.plugins",
   "applyuminati.applications",

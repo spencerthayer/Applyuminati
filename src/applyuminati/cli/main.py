@@ -818,6 +818,27 @@ def applications_show(
 
 
 @app.command()
+def tui() -> None:
+    """Open the terminal UI. No server needs to be running."""
+    # Imported by name rather than statically: the TUI is an optional extra, and
+    # the import-linter layers contract puts cli and tui in the same layer, where
+    # siblings may not import each other. A dynamic import is also what keeps a
+    # headless install working.
+    try:
+        from importlib import import_module
+
+        TuiApp = import_module("applyuminati.tui.app").TuiApp
+    except ImportError as exc:
+        typer.secho(
+            "The terminal UI needs the tui extra: pip install 'applyuminati[tui]'",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    TuiApp().run()
+
+
+@app.command()
 def capabilities() -> None:
     """Print the plugin capability and maturity matrix.
 

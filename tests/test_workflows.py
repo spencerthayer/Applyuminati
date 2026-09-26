@@ -20,6 +20,11 @@ WORKFLOWS = Path(__file__).resolve().parents[1] / ".github" / "workflows"
 #: Every job that must succeed before an image may be published.
 REQUIRED_VALIDATION_JOBS = {"python", "web", "docker"}
 
+PYPI_WORKFLOW = "pypi.yml"
+
+#: Actions that upload to PyPI. Pinned to a major tag, never a floating branch.
+PYPI_PUBLISH_ACTION = "pypa/gh-action-pypi-publish"
+
 
 def _load(name: str) -> dict[str, Any]:
     with (WORKFLOWS / name).open("rb") as handle:
@@ -90,3 +95,100 @@ def test_release_never_publishes_from_a_pull_request(ci: dict[str, Any]) -> None
 def test_ci_runs_on_tags_so_tagged_releases_are_also_gated(ci: dict[str, Any]) -> None:
     push = _triggers(ci)["push"]
     assert "v*" in push["tags"]
+
+
+@pytest.fixture(scope="module")
+def pypi() -> dict[str, Any]:
+    path = WORKFLOWS / PYPI_WORKFLOW
+    assert path.is_file(), (
+        f"{PYPI_WORKFLOW} is missing; there is no way to install this project from PyPI at all"
+    )
+    return _load(PYPI_WORKFLOW)
+
+
+def _needs(job: dict[str, Any]) -> set[str]:
+    raw = job.get("needs", [])
+    return {raw} if isinstance(raw, str) else set(raw)
+
+
+def _ci_pypi_job(ci: dict[str, Any]) -> dict[str, Any]:
+    """Return the ci.yml job that calls pypi.yml, whichever it is named."""
+    callers = [
+        job
+        for job in ci["jobs"].values()
+        if job.get("uses") == f"./.github/workflows/{PYPI_WORKFLOW}"
+    ]
+    assert len(callers) == 1, (
+        f"ci.yml must call {PYPI_WORKFLOW} from exactly one job, found {len(callers)}; "
+        "a second caller is a second, ungated path to uploading"
+    )
+    return callers[0]
+
+
+def test_pypi_workflow_is_call_only(pypi: dict[str, Any]) -> None:
+    """The PyPI workflow must be reachable only by being called."""
+    triggers = _triggers(pypi)
+    assert "workflow_call" in triggers
+    forbidden = {"push", "pull_request", "schedule", "workflow_run", "release"}
+    assert not forbidden & set(triggers), (
+        "pypi.yml gained an independent trigger; a commit that fails CI could now upload to PyPI"
+    )
+
+
+def test_pypi_publish_input_defaults_to_false(pypi: dict[str, Any]) -> None:
+    """A routine CI run must build, never upload."""
+    publish = _triggers(pypi)["workflow_call"]["inputs"]["publish"]
+    assert publish["type"] == "boolean"
+    assert publish["default"] is False
+
+
+def test_ci_pypi_job_depends_on_every_validation_job(ci: dict[str, Any]) -> None:
+    missing = REQUIRED_VALIDATION_JOBS - _needs(_ci_pypi_job(ci))
+    assert not missing, f"PyPI job does not depend on validation jobs: {sorted(missing)}"
+
+
+def test_ci_publishes_to_pypi_only_from_a_pull_request_free_tag(ci: dict[str, Any]) -> None:
+    """The caller's gate is a second line of defence behind the missing trigger."""
+    condition = " ".join(str(_ci_pypi_job(ci)["if"]).split())
+    assert "github.event_name != 'pull_request'" in condition
+    assert "refs/heads/main" in condition or "refs/tags/v" in condition
+
+
+def test_pypi_build_job_runs_before_the_upload(pypi: dict[str, Any]) -> None:
+    jobs = pypi["jobs"]
+    assert "build" in jobs
+    assert "publish" in jobs
+    assert "build" in _needs(jobs["publish"])
+
+
+def test_pypi_publish_job_uses_trusted_publishing(pypi: dict[str, Any]) -> None:
+    """OIDC only: a long-lived API token must never gate a release."""
+    publish = pypi["jobs"]["publish"]
+    assert publish["permissions"]["id-token"] == "write"
+    assert publish["environment"] == "pypi"
+    assert "password" not in publish.get("with", {}), "an API token is configured"
+
+
+def test_ci_pypi_job_grants_the_oidc_permission_too(ci: dict[str, Any]) -> None:
+    """A called workflow cannot widen the permissions it is handed.
+
+    GitHub gives pypi.yml the intersection of the caller's grant and the
+    callee's declaration, so ``id-token: write`` in pypi.yml alone is
+    inert and the upload fails at the OIDC exchange. Both halves are needed,
+    and the failure only shows up on the first real publish, which is the
+    worst possible moment to discover it.
+    """
+    assert _ci_pypi_job(ci).get("permissions", {}).get("id-token") == "write", (
+        "the ci.yml job calling pypi.yml does not grant id-token: write; the "
+        "upload will fail at the OIDC exchange instead of at the first publish"
+    )
+
+
+def test_pypi_upload_step_is_gated_on_the_publish_input(pypi: dict[str, Any]) -> None:
+    """No condition on the input means every CI run uploads to PyPI."""
+    job = pypi["jobs"]["publish"]
+    assert "inputs.publish" in " ".join(str(job.get("if", "")).split())
+    uploads = [step for step in job["steps"] if PYPI_PUBLISH_ACTION in str(step.get("uses", ""))]
+    assert len(uploads) == 1, f"expected exactly one upload step, found {len(uploads)}"
+    # A major version tag, not a floating branch: @master can be repointed.
+    assert uploads[0]["uses"].endswith("/v1"), f"unpinned publish action: {uploads[0]['uses']}"

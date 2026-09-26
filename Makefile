@@ -1,4 +1,4 @@
-.PHONY: help install dev api web test lint format typecheck imports migrate revision dist docker-build docker-up docker-down clean
+.PHONY: help install dev api web test lint format typecheck imports migrate revision dist parity docker-build docker-up docker-down clean
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
@@ -38,6 +38,7 @@ revision: ## Create a new migration
 docker-build: ## Build the Docker image
 	docker build -t applyuminati:dev .
 
+
 docker-up: ## Start the Docker Compose stack (dev)
 	docker compose -f docker-compose.dev.yml up --build
 
@@ -69,3 +70,10 @@ print(f'ok: {wheels[0].name}, {sdists[0].name}, console script and dependencies 
 
 clean: ## Remove build artifacts
 	rm -rf .data .pytest_cache .ruff_cache src/applyuminati.egg-info
+
+# The markdown view of the surface manifest is generated, not written by hand,
+# so it cannot disagree with the machine-readable one. Imports the manifest
+# only: the tui extra is not needed to describe the TUI.
+parity: ## Regenerate docs/parity.md from the surface parity manifest
+	@uv run python -c "from pathlib import Path; from applyuminati.surface_parity import render_markdown; Path('docs/parity.md').write_text(render_markdown(), encoding='utf-8')"
+	@cat docs/parity.md

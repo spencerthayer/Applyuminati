@@ -37,6 +37,7 @@ from applyuminati.db.repositories import (
 )
 from applyuminati.db.session import Database, get_database
 from applyuminati.llm.client import LLMClient
+from applyuminati.services.local_browser import LocalBrowserManager
 
 log = get_logger(__name__)
 
@@ -97,6 +98,9 @@ class ServiceContainer:
         #: cannot outlive the process holding it, so this is presence rather than
         #: state worth persisting.
         self.browser_hosts = BrowserHostManager()
+        #: Process-owned local browser backends for attempts PR selection
+        #: routed to a locally registered backend. Closed with the container.
+        self.local_browsers = LocalBrowserManager(self.settings)
         _register_builtin_plugins()
 
     # -- resources --------------------------------------------------------
@@ -125,6 +129,7 @@ class ServiceContainer:
             yield Repositories.bind(session)
 
     async def aclose(self) -> None:
+        await self.local_browsers.aclose()
         if self._llm is not None:
             await self._llm.aclose()
             self._llm = None

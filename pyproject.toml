@@ -148,7 +148,7 @@ ignore = [
 "src/applyuminati/cli/**" = ["T20", "B008", "ASYNC240"]
 "src/applyuminati/host/**" = ["T20", "B008"]
 # Closed HostCommand switch: one branch per protocol verb is the point.
-"src/applyuminati/host/dispatcher.py" = ["T20", "B008", "PLR0911", "PLR0912"]
+"src/applyuminati/host/dispatcher.py" = ["T20", "B008", "PLR0911", "PLR0912", "PLR0915"]
 # Shared ATS form flow: each early return is a typed workflow outcome.
 "src/applyuminati/applications/runner.py" = ["PLR0911"]
 "src/applyuminati/api/**" = ["B008"]

@@ -128,6 +128,22 @@ class ServiceContainer:
         async with self.database.read_session() as session:
             yield Repositories.bind(session)
 
+    async def sync_settings_to_db(self) -> int:
+        """Apply ``settings.discovery.sources`` to the database. Call on startup.
+
+        A config file is how a Docker or pip install configures sources, and
+        env vars cannot carry board tokens comfortably, so the file has to win
+        for any source it names. Sources it does not mention keep their
+        database state, which is what lets ``sources disable`` stick.
+
+        Returns how many sources changed, so the caller can log it. Safe to
+        call repeatedly; a second call with an unchanged file changes nothing.
+        """
+        from applyuminati.services.source_service import SourceService
+
+        async with self.repositories() as repos:
+            return await SourceService(repos, self.settings).sync_from_settings()
+
     async def aclose(self) -> None:
         await self.local_browsers.aclose()
         if self._llm is not None:

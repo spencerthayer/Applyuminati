@@ -45,6 +45,17 @@ def _container() -> ServiceContainer:
     return get_container()
 
 
+def _sync_sources(container: ServiceContainer) -> None:
+    """Apply config.toml to the database before reading source state.
+
+    A config file is the documented way to configure sources, and the CLI is
+    the main way to use the product, so the CLI has to honour it the way the
+    API lifespan does. Only sources the file names are affected, which is what
+    lets `sources disable` stick for a source nobody put in the file.
+    """
+    _run_async(container.sync_settings_to_db())
+
+
 # -- init ----------------------------------------------------------------
 
 
@@ -71,6 +82,7 @@ def init() -> None:
 def doctor() -> None:
     """Check the health of every component."""
     container = _container()
+    _sync_sources(container)
 
     async def _check() -> None:
         db_ok = await container.database.check()
@@ -363,6 +375,7 @@ app.add_typer(sources_app, name="sources")
 def sources_list() -> None:
     """List all registered job sources."""
     container = _container()
+    _sync_sources(container)
 
     async def _list() -> None:
         async with container.repositories() as repos:
@@ -439,6 +452,7 @@ def jobs_discover(
 ) -> None:
     """Run job discovery across enabled sources."""
     container = _container()
+    _sync_sources(container)
 
     async def _discover() -> None:
         async with container.repositories() as repos:

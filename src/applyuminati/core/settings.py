@@ -253,7 +253,9 @@ class ServerSettings(BaseModel):
     #: Extra browser origins allowed to call the API. The bundled UI is served
     #: same-origin, so this stays empty in the default Docker deployment.
     cors_origins: list[str] = Field(default_factory=list)
-    #: Directory of built web assets. Served at ``/`` when present.
+    #: Directory of built web assets. Served at ``/`` when present. ``None``
+    #: auto-detects: a checkout finds ``apps/web/dist`` beside the package, and
+    #: an install with no assets serves the API alone.
     web_dist: Path | None = None
 
 
@@ -369,7 +371,7 @@ class Settings(BaseSettings):
             init_settings,
             env_settings,
             dotenv_settings,
-            _TomlConfigSource(settings_cls),
+            _TomlConfigSource(settings_cls, getattr(init_settings, "init_kwargs", None)),
             file_secret_settings,
         )
 
@@ -539,14 +541,24 @@ class _TomlConfigSource(PydanticBaseSettingsSource):
     the data directory itself can be overridden by env var.
     """
 
+    def __init__(self, settings_cls: type[Any], init_kwargs: dict[str, Any] | None = None) -> None:
+        super().__init__(settings_cls)
+        self._init_kwargs = init_kwargs or {}
+
     def get_field_value(self, field: Any, field_name: str) -> tuple[Any, str, bool]:
         raise NotImplementedError  # pragma: no cover - not used by __call__
 
     def __call__(self) -> dict[str, Any]:
         import os
 
+        # An explicitly passed data_dir wins over the environment. Reading only
+        # the env var made Settings(data_dir=...) silently ignore the config file
+        # beside it, which is how tests and any programmatic embed were broken.
         raw_dir = os.environ.get("APPLYUMINATI_DATA_DIR")
         data_dir = Path(raw_dir).expanduser() if raw_dir else DEFAULT_DATA_DIR
+        override = self._init_kwargs.get("data_dir")
+        if override is not None:
+            data_dir = Path(override).expanduser()
         path = data_dir / CONFIG_FILENAME
         if not path.is_file():
             return {}

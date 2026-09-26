@@ -248,8 +248,15 @@ export function get<T>(path: string, params?: QueryParams, signal?: AbortSignal)
   return request<T>("GET", path, { params, signal });
 }
 
-export function post<T>(path: string, body?: unknown): Promise<T> {
-  return request<T>("POST", path, { body: body ?? {} });
+/**
+ * POST, optionally with query parameters.
+ *
+ * `/jobs/discover` and `/jobs/score` take their arguments as query parameters
+ * rather than a request body, so `params` is accepted here instead of forcing
+ * each caller to hand-build a URL.
+ */
+export function post<T>(path: string, body?: unknown, params?: QueryParams): Promise<T> {
+  return request<T>("POST", path, { body: body ?? {}, params });
 }
 
 export function put<T>(path: string, body?: unknown): Promise<T> {

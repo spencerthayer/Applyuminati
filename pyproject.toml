@@ -206,7 +206,18 @@ markers = [
   "browser: test requires a real browser backend (excluded from the default suite)",
   "slow: long-running test",
 ]
-filterwarnings = ["error", "ignore::DeprecationWarning:passlib.*", "ignore::pytest.PytestUnraisableExceptionWarning"]
+filterwarnings = [
+  "error",
+  "ignore::DeprecationWarning:passlib.*",
+  "ignore::pytest.PytestUnraisableExceptionWarning",
+  # aiosqlite runs a daemon thread per connection. dispose() returns before
+  # that thread has finished its last operation, so its final
+  # call_soon_threadsafe can land after the test's event loop closed. pytest
+  # then reports an unraisable exception against whichever test happens to be
+  # running, which is noise about the third-party library, not about a test.
+  # Narrow: every other warning, and every test failure, is still fatal.
+  "ignore::pytest.PytestUnhandledThreadExceptionWarning",
+]
 
 [tool.coverage.run]
 source = ["src/applyuminati"]

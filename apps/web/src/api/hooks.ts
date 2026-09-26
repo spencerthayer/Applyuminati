@@ -25,24 +25,28 @@ import type {
   ApplicationDetail,
   ApplicationState,
   ApplicationSummary,
+  ApplyJobResponse,
   AuthStatus,
   BackendHealthResponse,
   DashboardResponse,
   DiscoverRequest,
+  DiscoverResponse,
+  ExecutionMode,
   HealthResponse,
   InboxEntry,
   JobDetail,
   OpenBrowserResponse,
   JobSummary,
   Page,
+  PreferencesUpdateRequest,
   ProfileImportRequest,
   ResolveInboxRequest,
   ResolveInboxResponse,
   ProfileImportResponse,
   ProfileResponse,
   Recommendation,
-  RunSummary,
   ScoreRequest,
+  ScoreResponse,
   SettingsResponse,
   SourceInfo,
   SourceToggleRequest,
@@ -196,10 +200,12 @@ export function useJobs(filters: JobFilters): UseQueryResult<Page<JobSummary>, A
         "/jobs",
         {
           query: filters.query,
-          sources: filters.sources,
           recommendation: filters.recommendation,
           min_score: filters.min_score,
-          states: filters.states,
+          // The API names these `source` and `state` (singular, repeated);
+          // anything else is silently dropped by FastAPI as an unknown param.
+          source: filters.sources,
+          state: filters.states,
           verification: filters.verification,
           has_score: filters.has_score,
           sort: filters.sort,
@@ -223,11 +229,19 @@ export function useJob(jobId: string | undefined): UseQueryResult<JobDetail, Api
   });
 }
 
-/** Kick off a discovery run across the enabled sources. */
-export function useDiscover(): UseMutationResult<RunSummary, ApiError, DiscoverRequest> {
+/**
+ * Kick off a discovery run across the enabled sources.
+ *
+ * The endpoint reads `sources` / `queries` / `locations` as query parameters
+ * rather than a request body, so they are serialised into the URL. `wait` is
+ * deliberately not sent: the browser must never ask the server to block on a
+ * run that takes seconds.
+ */
+export function useDiscover(): UseMutationResult<DiscoverResponse, ApiError, DiscoverRequest> {
   const client = useQueryClient();
-  return useMutation<RunSummary, ApiError, DiscoverRequest>({
-    mutationFn: (body) => post<RunSummary>("/jobs/discover", body),
+  return useMutation<DiscoverResponse, ApiError, DiscoverRequest>({
+    mutationFn: ({ sources, queries, locations }) =>
+      post<DiscoverResponse>("/jobs/discover", undefined, { sources, queries, locations }),
     onSuccess: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ["jobs"] }),
@@ -238,14 +252,49 @@ export function useDiscover(): UseMutationResult<RunSummary, ApiError, DiscoverR
   });
 }
 
-/** Score (or re-score) discovered jobs against the active profile. */
-export function useScore(): UseMutationResult<RunSummary, ApiError, ScoreRequest> {
+/**
+ * Score (or re-score) discovered jobs against the active profile.
+ *
+ * Query parameters, for the same reason as `useDiscover`. The run is
+ * synchronous server-side, so the caller keeps the button disabled until it
+ * finishes rather than leaving a click with no visible result.
+ */
+export function useScore(): UseMutationResult<ScoreResponse, ApiError, ScoreRequest> {
   const client = useQueryClient();
-  return useMutation<RunSummary, ApiError, ScoreRequest>({
-    mutationFn: (body) => post<RunSummary>("/jobs/score", body),
+  return useMutation<ScoreResponse, ApiError, ScoreRequest>({
+    mutationFn: ({ job_ids, rescore, use_llm, limit }) =>
+      post<ScoreResponse>("/jobs/score", undefined, { job_ids, rescore, use_llm, limit }),
     onSuccess: async () => {
       await Promise.all([
         client.invalidateQueries({ queryKey: ["jobs"] }),
+        client.invalidateQueries({ queryKey: queryKeys.dashboard }),
+      ]);
+    },
+  });
+}
+
+export interface ApplyToJobInput {
+  jobId: string;
+  /** Null sends no override, so the server applies its configured mode. */
+  mode: ExecutionMode | null;
+}
+
+/**
+ * Start an application for a job — the only way to begin applying.
+ *
+ * Two failures here are ordinary user outcomes rather than bugs, and callers
+ * are expected to render them specially: 400 when no profile has been
+ * imported, and 409 when an attempt for this job is already in flight.
+ */
+export function useApplyToJob(): UseMutationResult<ApplyJobResponse, ApiError, ApplyToJobInput> {
+  const client = useQueryClient();
+  return useMutation<ApplyJobResponse, ApiError, ApplyToJobInput>({
+    mutationFn: ({ jobId, mode }) =>
+      post<ApplyJobResponse>(`/jobs/${encodeURIComponent(jobId)}/apply`, { mode }),
+    onSuccess: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: ["jobs"] }),
+        client.invalidateQueries({ queryKey: ["applications"] }),
         client.invalidateQueries({ queryKey: queryKeys.dashboard }),
       ]);
     },
@@ -298,6 +347,31 @@ export function useImportResume(): UseMutationResult<
   });
 }
 
+/**
+ * Edit the job-seeking preferences on the active profile.
+ *
+ * Titles, locations, remote modes and employment types feed both discovery
+ * queries and scoring, so the job family is invalidated alongside the profile.
+ */
+export function useUpdatePreferences(): UseMutationResult<
+  ProfileResponse,
+  ApiError,
+  PreferencesUpdateRequest
+> {
+  const client = useQueryClient();
+  return useMutation<ProfileResponse, ApiError, PreferencesUpdateRequest>({
+    mutationFn: (body) => put<ProfileResponse>("/profile/preferences", body),
+    onSuccess: async (profile) => {
+      client.setQueryData(queryKeys.profile, profile);
+      await Promise.all([
+        client.invalidateQueries({ queryKey: queryKeys.settings }),
+        client.invalidateQueries({ queryKey: ["jobs"] }),
+        client.invalidateQueries({ queryKey: queryKeys.dashboard }),
+      ]);
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Sources
 // ---------------------------------------------------------------------------
@@ -345,7 +419,7 @@ export function useApplications(
     queryFn: ({ signal }) =>
       get<Page<ApplicationSummary>>(
         "/applications",
-        { states: filters.states, limit: filters.limit, offset: filters.offset },
+        { state: filters.states, limit: filters.limit, offset: filters.offset },
         signal,
       ),
     placeholderData: keepPreviousData,

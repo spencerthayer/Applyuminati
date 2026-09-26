@@ -8,6 +8,7 @@ answered 503 on every route.
 
 from __future__ import annotations
 
+import asyncio
 import re
 import sqlite3
 from pathlib import Path
@@ -19,7 +20,7 @@ from applyuminati.cli.main import app
 from applyuminati.core.logging import configure_logging
 from applyuminati.core.settings import LogFormat, Settings, set_settings
 from applyuminati.db.session import set_database
-from applyuminati.services.container import set_container
+from applyuminati.services.container import get_container, set_container
 
 runner = CliRunner()
 
@@ -36,6 +37,13 @@ def _reset_process_singletons():
     set_database(None)
     set_container(None)
     yield
+    # Dispose before clearing. A command like doctor builds a real container on
+    # a real data directory, and an undisposed engine leaves a daemon
+    # aiosqlite thread that throws "Event loop is closed" during whichever
+    # later test happens to be running.
+    container = get_container()
+    if container is not None:
+        asyncio.run(container.aclose())
     set_settings(None)
     set_database(None)
     set_container(None)

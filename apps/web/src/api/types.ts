@@ -37,6 +37,21 @@ export type ExecutionMode =
   | "fill_no_submit"
   | "autonomous_submit";
 
+/**
+ * The `ExecutionMode` values, for the picker that chooses one.
+ *
+ * Each list below is a hand-maintained mirror of the matching server enum, kept
+ * beside the type it mirrors so a drift is a one-file edit. The server
+ * validates whatever is sent, so a value missing here is one a user cannot pick
+ * — never one the API accepts by accident.
+ */
+export const EXECUTION_MODES: ExecutionMode[] = [
+  "research_only",
+  "prepare_application",
+  "fill_no_submit",
+  "autonomous_submit",
+];
+
 /** `applyuminati.core.models.common.EmploymentType` */
 export type EmploymentType =
   | "full_time"
@@ -49,8 +64,22 @@ export type EmploymentType =
   | "volunteer"
   | "unknown";
 
+export const EMPLOYMENT_TYPES: EmploymentType[] = [
+  "full_time",
+  "part_time",
+  "contract",
+  "contract_to_hire",
+  "temporary",
+  "internship",
+  "apprenticeship",
+  "volunteer",
+  "unknown",
+];
+
 /** `applyuminati.core.models.common.RemoteMode` */
 export type RemoteMode = "remote" | "hybrid" | "onsite" | "unknown";
+
+export const REMOTE_MODES: RemoteMode[] = ["remote", "hybrid", "onsite", "unknown"];
 
 /** `applyuminati.core.models.common.SeniorityLevel` — ordered ladder. */
 export type SeniorityLevel =
@@ -67,6 +96,23 @@ export type SeniorityLevel =
   | "vp"
   | "executive"
   | "unknown";
+
+/** Ordered from most junior to most senior, matching the server ladder. */
+export const SENIORITY_LEVELS: SeniorityLevel[] = [
+  "intern",
+  "entry",
+  "junior",
+  "mid",
+  "senior",
+  "staff",
+  "principal",
+  "lead",
+  "manager",
+  "director",
+  "vp",
+  "executive",
+  "unknown",
+];
 
 /** `applyuminati.core.models.common.CompensationPeriod` */
 export type CompensationPeriod = "hourly" | "daily" | "weekly" | "monthly" | "yearly";
@@ -136,7 +182,31 @@ export type ApplicationState =
   | "offer"
   | "accepted"
   | "closed"
-  | "failed";
+  | "failed"
+  | "needs_attention";
+
+export const APPLICATION_STATES: ApplicationState[] = [
+  "discovered",
+  "evaluating",
+  "skipped",
+  "shortlisted",
+  "preparing",
+  "ready",
+  "applying",
+  "submitted",
+  "confirmed",
+  "recruiter_contact",
+  "assessment",
+  "interview",
+  "follow_up",
+  "rejected",
+  "withdrawn",
+  "offer",
+  "accepted",
+  "closed",
+  "failed",
+  "needs_attention",
+];
 
 /** `applyuminati.core.strategy.Strictness` */
 export type Strictness = "hard" | "soft" | "ignored";
@@ -502,6 +572,22 @@ export interface ScoreRequest {
   wait?: boolean;
 }
 
+/**
+ * `POST /jobs/{id}/apply` body. A null `mode` means "use the server's
+ * configured execution mode"; the attempt records whichever applied, so
+ * changing the setting later never rewrites what an attempt was allowed to do.
+ */
+export interface ApplyJobRequest {
+  mode?: ExecutionMode | null;
+}
+
+/** `POST /jobs/{id}/apply` response. 201 on success. */
+export interface ApplyJobResponse {
+  attempt_id: string;
+  state: string;
+  driver: string;
+}
+
 // ---------------------------------------------------------------------------
 // Applications
 // ---------------------------------------------------------------------------
@@ -559,6 +645,30 @@ export interface RunSummary {
   stats: Record<string, number>;
   failures: string[];
   triggered_by: string;
+}
+
+/**
+ * `POST /jobs/discover` response.
+ *
+ * A flat summary of the finished run rather than a `RunSummary`: the endpoint
+ * reports the counters a caller actually wants, not a nested stats map.
+ */
+export interface DiscoverResponse {
+  run_id: string;
+  state: string;
+  jobs_discovered: number;
+  jobs_created: number;
+  jobs_merged: number;
+  failures: string[];
+}
+
+/** `POST /jobs/score` response. */
+export interface ScoreResponse {
+  run_id: string;
+  state: string;
+  scored: number;
+  failed: number;
+  failures: string[];
 }
 
 export interface ActivityItem {

@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useSession } from "./api/hooks";
 import { Layout } from "./components/Layout";
+import { Applications } from "./pages/Applications";
 import { Dashboard } from "./pages/Dashboard";
 import { Jobs } from "./pages/Jobs";
 import { JobDetail } from "./pages/JobDetail";
@@ -30,6 +31,8 @@ export function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/needs-you" element={<NeedsYou />} />
           <Route path="/jobs" element={<Jobs />} />
+          <Route path="/applications" element={<Applications />} />
+          <Route path="/applications/:id" element={<Applications />} />
           <Route path="/jobs/:id" element={<JobDetail />} />
           <Route path="/profile" element={<Profile />} />
           <Route path="/settings" element={<Settings />} />

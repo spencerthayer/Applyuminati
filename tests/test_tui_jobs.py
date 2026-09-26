@@ -7,19 +7,21 @@ cells back out of the rendered rows.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from textual.widgets import DataTable, Input, Static
 
+import applyuminati.tui as tui_package
 from applyuminati.core.models.job import SourceTier
 from applyuminati.services.container import ServiceContainer
 from applyuminati.sources.normalize import build_job
 from applyuminati.tui.app import TuiApp
-from applyuminati.tui.screens.jobs import JobsScreen
+from applyuminati.tui.screens.jobs import JobSelected, JobsScreen
 
 if TYPE_CHECKING:
     from textual.pilot import Pilot
-    from textual.widgets import DataTable
 
 
 def _job(*, source_job_id: str, company: str, title: str) -> Any:
@@ -36,11 +38,15 @@ def _job(*, source_job_id: str, company: str, title: str) -> Any:
 class _RecordingApp(TuiApp):
     """Captures the job ids the screen reports, standing in for the detail screen."""
 
+    # Textual resolves a relative CSS_PATH against the module that defines the
+    # App, which for a subclass living here would be tests/.
+    CSS_PATH = str(Path(tui_package.__file__).parent / "styles.tcss")
+
     def __init__(self, container: ServiceContainer) -> None:
         super().__init__(container)
         self.selected: list[str] = []
 
-    def on_job_selected(self, event: Any) -> None:
+    def on_job_selected(self, event: JobSelected) -> None:
         self.selected.append(event.job_id)
 
 
@@ -66,6 +72,18 @@ def _table(screen: JobsScreen) -> DataTable:
     return screen.query_one("#jobs-table", DataTable)
 
 
+def _search(screen: JobsScreen) -> Input:
+    return screen.query_one("#search", Input)
+
+
+def _status(screen: JobsScreen) -> Static:
+    return screen.query_one("#status", Static)
+
+
+def _empty(screen: JobsScreen) -> Static:
+    return screen.query_one("#empty-state", Static)
+
+
 def _companies(screen: JobsScreen) -> list[str]:
     table = _table(screen)
     return [str(table.get_row_at(row)[0]) for row in range(table.row_count)]
@@ -79,7 +97,9 @@ async def _shown(app: TuiApp, pilot: Pilot) -> JobsScreen:
     return screen
 
 
-async def test_the_table_lists_seeded_jobs_with_their_companies(container: ServiceContainer) -> None:
+async def test_the_table_lists_seeded_jobs_with_their_companies(
+    container: ServiceContainer,
+) -> None:
     await _seed(container)
 
     app = TuiApp(container)
@@ -106,7 +126,9 @@ async def test_each_row_shows_its_title_company_and_location(container: ServiceC
         assert row[1] == "Product Designer"
 
 
-async def test_an_unscored_job_shows_a_placeholder_not_a_fake_zero(container: ServiceContainer) -> None:
+async def test_an_unscored_job_shows_a_placeholder_not_a_fake_zero(
+    container: ServiceContainer,
+) -> None:
     await _seed(container)
 
     app = TuiApp(container)
@@ -127,9 +149,9 @@ async def test_no_jobs_shows_an_empty_state_rather_than_a_blank_table(
         screen = await _shown(app, pilot)
 
         assert _table(screen).row_count == 0
-        empty = screen.query_one("#empty-state")
+        empty = _empty(screen)
         assert empty.display is True
-        assert "no jobs" in str(empty.renderable).lower()
+        assert "no jobs" in str(empty.content).lower()
 
 
 async def test_rows_are_present_so_the_empty_state_is_hidden(container: ServiceContainer) -> None:
@@ -139,7 +161,7 @@ async def test_rows_are_present_so_the_empty_state_is_hidden(container: ServiceC
     async with app.run_test() as pilot:
         screen = await _shown(app, pilot)
 
-        assert screen.query_one("#empty-state").display is False
+        assert _empty(screen).display is False
 
 
 async def test_typing_in_the_search_box_narrows_the_rows(container: ServiceContainer) -> None:
@@ -150,7 +172,7 @@ async def test_typing_in_the_search_box_narrows_the_rows(container: ServiceConta
         screen = await _shown(app, pilot)
         assert _table(screen).row_count == 2
 
-        screen.query_one("#search").value = "globex"
+        _search(screen).value = "globex"
         await _settle(pilot)
 
         assert _table(screen).row_count == 1
@@ -164,7 +186,7 @@ async def test_the_search_also_matches_titles(container: ServiceContainer) -> No
     async with app.run_test() as pilot:
         screen = await _shown(app, pilot)
 
-        screen.query_one("#search").value = "designer"
+        _search(screen).value = "designer"
         await _settle(pilot)
 
         assert _companies(screen) == ["Initech"]
@@ -177,11 +199,11 @@ async def test_clearing_the_search_lists_everything_again(container: ServiceCont
     async with app.run_test() as pilot:
         screen = await _shown(app, pilot)
 
-        screen.query_one("#search").value = "globex"
+        _search(screen).value = "globex"
         await _settle(pilot)
         assert _table(screen).row_count == 1
 
-        screen.query_one("#search").value = ""
+        _search(screen).value = ""
         await _settle(pilot)
         assert _table(screen).row_count == 2
 
@@ -195,13 +217,13 @@ async def test_a_search_that_matches_nothing_is_an_empty_state_not_an_error(
     async with app.run_test() as pilot:
         screen = await _shown(app, pilot)
 
-        screen.query_one("#search").value = "nothingmatchesthis"
+        _search(screen).value = "nothingmatchesthis"
         await _settle(pilot)
 
         assert _table(screen).row_count == 0
-        empty = screen.query_one("#empty-state")
+        empty = _empty(screen)
         assert empty.display is True
-        assert "nothingmatchesthis" in str(empty.renderable)
+        assert "nothingmatchesthis" in str(empty.content)
 
 
 @pytest.mark.parametrize("blank", ["", "   "])
@@ -214,7 +236,7 @@ async def test_a_blank_search_is_treated_as_no_filter(
     async with app.run_test() as pilot:
         screen = await _shown(app, pilot)
 
-        screen.query_one("#search").value = blank
+        _search(screen).value = blank
         await _settle(pilot)
 
         assert _table(screen).row_count == 2
@@ -259,8 +281,8 @@ async def test_the_status_line_counts_what_is_shown(container: ServiceContainer)
     async with app.run_test() as pilot:
         screen = await _shown(app, pilot)
 
-        assert "2" in str(screen.query_one("#status").renderable)
+        assert "2" in str(_status(screen).content)
 
-        screen.query_one("#search").value = "globex"
+        _search(screen).value = "globex"
         await _settle(pilot)
-        assert "1" in str(screen.query_one("#status").renderable)
+        assert "1" in str(_status(screen).content)

@@ -19,6 +19,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             Needs you{waiting ? ` (${waiting})` : ""}
           </NavLink>
           <NavLink to="/jobs" className={({ isActive }) => (isActive ? "active" : "")}>Jobs</NavLink>
+          <NavLink to="/applications" className={({ isActive }) => (isActive ? "active" : "")}>Applications</NavLink>
           <NavLink to="/profile" className={({ isActive }) => (isActive ? "active" : "")}>Profile</NavLink>
           <NavLink to="/settings" className={({ isActive }) => (isActive ? "active" : "")}>Settings</NavLink>
         </nav>

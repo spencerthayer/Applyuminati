@@ -1,16 +1,55 @@
+import { useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { useJob } from "../api/hooks";
+import { useApplyToJob, useJob } from "../api/hooks";
 import { Loading, ErrorBanner } from "../components/Feedback";
 import { ScoreBar } from "../components/ScoreBar";
 import { StateBadge } from "../components/Badges";
-import type { MissingRequirementView } from "../api/types";
+import type { ApiError } from "../api/client";
+import { EXECUTION_MODES, type ExecutionMode, type MissingRequirementView } from "../api/types";
+
+interface ApplyOutcome {
+  message: string;
+  hint: string;
+  link: string;
+  label: string;
+}
+
+function applyOutcome(error: ApiError, jobId: string): ApplyOutcome {
+  // Both of these are ordinary outcomes a user hits, not bugs: one means the
+  // work is already underway, the other that there is nothing to apply with yet.
+  if (error.status === 409) {
+    return {
+      message: "An application for this job is already in progress.",
+      hint: "Pick up where it left off rather than starting a second one.",
+      link: `/applications?job=${encodeURIComponent(jobId)}`,
+      label: "View the application",
+    };
+  }
+  if (error.status === 400) {
+    return {
+      message: error.message,
+      hint: "Applications are written from your career profile, so it has to exist first.",
+      link: "/profile",
+      label: "Import a profile",
+    };
+  }
+  return {
+    message: error.message,
+    hint: error.recovery,
+    link: "/applications",
+    label: "Applications",
+  };
+}
 
 export function JobDetail() {
   const { id } = useParams<{ id: string }>();
   const { data: job, isLoading, error } = useJob(id!);
+  const apply = useApplyToJob();
+  const [mode, setMode] = useState<"" | ExecutionMode>("");
   if (isLoading) return <Loading />;
   if (error) return <ErrorBanner message={String(error)} />;
   if (!job) return <ErrorBanner message="Job not found" />;
+  const outcome = apply.error ? applyOutcome(apply.error, job.id) : null;
   return (
     <div>
       <Link to="/jobs">← Back to Jobs</Link>
@@ -20,6 +59,44 @@ export function JobDetail() {
         {job.recommendation && <StateBadge state={job.recommendation} />}
         {job.application_state && <StateBadge state={job.application_state} />}
         <span className="badge badge-muted">{job.verification}</span>
+      </div>
+      <div className="card">
+        <h3>Apply</h3>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
+          <div>
+            <label htmlFor="execution-mode">Execution mode</label>
+            <select
+              id="execution-mode"
+              value={mode}
+              disabled={apply.isPending}
+              onChange={(e) => setMode(e.target.value as "" | ExecutionMode)}
+            >
+              <option value="">Server default</option>
+              {EXECUTION_MODES.map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </div>
+          <button onClick={() => apply.mutate({ jobId: job.id, mode: mode || null })} disabled={apply.isPending}>
+            {apply.isPending ? "Applying…" : "Apply"}
+          </button>
+        </div>
+        {apply.isSuccess && apply.data && (
+          <p style={{ marginTop: 12 }}>
+            Application started — attempt <strong>{apply.data.attempt_id}</strong>{" "}
+            ({apply.data.state} via {apply.data.driver}).{" "}
+            <Link to={`/applications?job=${encodeURIComponent(job.id)}`}>View the application</Link>
+          </p>
+        )}
+        {outcome && (
+          <div className="error" style={{ marginTop: 12 }}>
+            <div>{outcome.message}</div>
+            <div style={{ marginTop: 4 }}>{outcome.hint}</div>
+            <div style={{ marginTop: 8 }}>
+              <Link to={outcome.link}>{outcome.label}</Link>
+            </div>
+          </div>
+        )}
       </div>
       {job.score && (
         <div className="card">

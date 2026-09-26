@@ -49,14 +49,20 @@ def run_migrations_online() -> None:
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
     )
-    with connectable.connect() as connection:
-        context.configure(
-            connection=connection,
-            target_metadata=target_metadata,
-            render_as_batch=True,
-        )
-        with context.begin_transaction():
-            context.run_migrations()
+    try:
+        with connectable.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                render_as_batch=True,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        # The engine is not disposed anywhere else. Closing the connection is
+        # not enough: an undisposed engine keeps its SQLite handle alive, which
+        # surfaces as an unraisable exception long after the command finished.
+        connectable.dispose()
 
 
 if context.is_offline_mode():

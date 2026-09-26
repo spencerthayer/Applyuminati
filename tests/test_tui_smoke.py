@@ -14,10 +14,13 @@ pytest.importorskip("textual", reason="the tui extra is not installed")
 from textual.widgets import Footer, Header
 
 
-async def test_tui_app_starts_headless() -> None:
+async def test_tui_app_starts_headless(container) -> None:
+    # The container is injected rather than left to the app: a no-arg TuiApp
+    # builds one on the real data directory, and that engine is never disposed,
+    # so its aiosqlite worker thread throws at interpreter shutdown.
     from applyuminati.tui.app import TuiApp
 
-    app = TuiApp()
+    app = TuiApp(container)
     async with app.run_test() as pilot:
         await pilot.pause()
         assert app.query_one("#content") is not None
@@ -67,9 +70,9 @@ async def test_a_tui_command_is_registered() -> None:
     assert "tui" in names
 
 
-async def test_the_app_owns_its_attempt_worker_task() -> None:
+async def test_the_app_owns_its_attempt_worker_task(container) -> None:
     from applyuminati.tui.app import TuiApp
 
-    app = TuiApp()
+    app = TuiApp(container)
     assert hasattr(app, "_worker_task")
     assert hasattr(app, "_worker_stop")

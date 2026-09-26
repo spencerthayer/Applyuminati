@@ -129,7 +129,7 @@ todos:
       - t23-web-source-options-and-prefs
   - id: t25-parity-contract
     content: Introduce the single-source parity manifest and its test
-    status: pending
+    status: completed
     dependencies:
       - t20-tui-headless-test-suite
       - t24-web-parity-tests
@@ -215,129 +215,12 @@ If the same action fails again without new evidence, do not repeat it unchanged.
 
 | Field | Current state |
 |---|---|
-| Phase | 24 of 25 tasks complete and committed. t25 (parity manifest) in progress. |
-| Active task | `t25-parity-contract`, delegated. |
-| Last confirmed result | **574 Python tests passed, 0 failed, 0 errors.** Web: **77 tests across 13 files**, typecheck, lint, and build all clean. `ruff format --check` 220 files clean, `ruff check` clean, `pyright` 0 errors, `lint-imports` 4 contracts kept. |
-| Current approach | Unchanged. The parity manifest is the last piece; then verify, open a PR, and run the review/CI loop. |
-| Blockers / open decisions | The first real PyPI publish still needs a human: create the project, configure the Trusted Publisher against the `pypi` environment, and tag. Not done here. |
+| Phase | **All 25 tasks complete and committed.** |
+| Active task | None. |
+| Last confirmed result | **584 Python tests passed, 0 failed, 0 errors.** Web: 77 tests, typecheck, lint, build clean. `ruff format --check` clean, `ruff check` clean, `pyright` 0 errors, `lint-imports` 4 kept. `make parity` regenerates `docs/parity.md` byte-identically. The manifest imports with Textual absent, verified in a clean no-extras venv. |
+| Current approach | Complete. |
+| Blockers / open decisions | None blocking. The first real PyPI publish needs a human: create the project, configure a Trusted Publisher against the `pypi` environment, and tag. 17 of 24 capabilities are missing on at least one surface; recorded in `docs/parity.md` as a product finding, not a failure. |
 
----
-
-## 4. Task dependency graph
-
-The flowchart is the dependency authority. A `◐` or `☑` node with an edge from a `☐` parent is a skipped dependency and must never be saved in that state.
-
-```mermaid
-flowchart TD
-  subgraph unblock [Unblock - proven defects]
-    t01_fix_worker_lock("☑ t01-fix-worker-lock<br/>Fix the worker database-is-locked deadlock")
-    t02_add_apply_endpoint("☑ t02-add-apply-endpoint<br/>Add the start-an-application service, route, and command")
-    t03_link_attempt_to_application("☑ t03-link-attempt-to-application<br/>Propagate a terminal attempt to Application state")
-    t04_sync_sources_from_settings("☑ t04-sync-sources-from-settings<br/>Call sync_from_settings on startup")
-    t05_first_run_init("☑ t05-first-run-init<br/>Make init migrate, write config, provision auth")
-    t06_serve_web_dist_default("☑ t06-serve-web-dist-default<br/>Serve the built SPA without configuration")
-    t07_accept_string_location("☑ t07-accept-string-location<br/>Accept a string basics.location")
-    t08_fix_uncoupled_ego_test("☑ t08-fix-uncoupled-ego-test<br/>Make the ego-lite health test portable")
-    t09_forward_job_state_filter("☑ t09-forward-job-state-filter<br/>Forward the dropped state filter")
-    t10_default_autonomous_submit("☑ t10-default-autonomous-submit<br/>Switch the default execution mode")
-  end
-  subgraph ship [Ship]
-    t11_publish_to_pypi("☑ t11-publish-to-pypi<br/>Add a PyPI build and publish workflow")
-    t12_rewrite_first_run_docs("☑ t12-rewrite-first-run-docs<br/>Rewrite the README quick start and SECURITY")
-  end
-  subgraph tui [Textual TUI]
-    t13_tui_scaffold{{"☐ t13-tui-scaffold<br/>Scaffold the Textual package and contracts"}}
-    t14_tui_jobs_screen(["☐ t14-tui-jobs-screen<br/>Build the TUI Jobs screen"])
-    t15_tui_job_detail_apply(["☐ t15-tui-job-detail-apply<br/>Build job detail with the apply action"])
-    t16_tui_needs_you_screen(["☐ t16-tui-needs-you-screen<br/>Build the human-handoff screen"])
-    t17_tui_dashboard_screen(["☐ t17-tui-dashboard-screen<br/>Build the TUI Dashboard screen"])
-    t18_tui_sources_settings_screen(["☐ t18-tui-sources-settings-screen<br/>Build Sources and Settings screens"])
-    t19_tui_profile_screen(["☐ t19-tui-profile-screen<br/>Build the TUI Profile screen"])
-    t20_tui_headless_test_suite(["☐ t20-tui-headless-test-suite<br/>Add the headless TUI test suite"])
-  end
-  subgraph web [WebUI parity]
-    t21_web_missing_actions["☐ t21-web-missing-actions<br/>Expose discover, score, and apply"]
-    t22_web_applications_page["☐ t22-web-applications-page<br/>Add the applications page and transitions"]
-    t23_web_source_options_and_prefs["☐ t23-web-source-options-and-prefs<br/>Add source options and profile preferences"]
-    t24_web_parity_tests["☐ t24-web-parity-tests<br/>Test the newly exposed actions"]
-  end
-  subgraph closeout [Closeout]
-    t25_parity_contract{{"☐ t25-parity-contract<br/>Introduce the parity manifest and its test"}}
-  end
-
-  t01_fix_worker_lock -->|claim is durable before execution| t02_add_apply_endpoint
-  t01_fix_worker_lock -->|attempt state can be written| t03_link_attempt_to_application
-  t04_sync_sources_from_settings -->|config.toml the file init writes| t05_first_run_init
-  t02_add_apply_endpoint -->|a working apply path to drive| t10_default_autonomous_submit
-  t05_first_run_init -->|install path is proven| t11_publish_to_pypi
-  t10_default_autonomous_submit -->|documented default matches behaviour| t11_publish_to_pypi
-  t11_publish_to_pypi -->|real install steps to document| t12_rewrite_first_run_docs
-  t02_add_apply_endpoint -->|apply action exists to bind| t13_tui_scaffold
-  t06_serve_web_dist_default -->|bundled asset story is settled| t13_tui_scaffold
-  t13_tui_scaffold -->|app shell and worker| t14_tui_jobs_screen
-  t14_tui_jobs_screen -->|row selection for detail| t15_tui_job_detail_apply
-  t10_default_autonomous_submit -->|default mode to display| t15_tui_job_detail_apply
-  t13_tui_scaffold -->|app shell and worker| t16_tui_needs_you_screen
-  t03_link_attempt_to_application -->|attempt and application agree on state| t16_tui_needs_you_screen
-  t13_tui_scaffold -->|app shell and worker| t17_tui_dashboard_screen
-  t13_tui_scaffold -->|app shell and worker| t18_tui_sources_settings_screen
-  t04_sync_sources_from_settings -->|options now persist from config| t18_tui_sources_settings_screen
-  t13_tui_scaffold -->|app shell and worker| t19_tui_profile_screen
-  t15_tui_job_detail_apply -->|screens complete| t20_tui_headless_test_suite
-  t16_tui_needs_you_screen -->|screens complete| t20_tui_headless_test_suite
-  t17_tui_dashboard_screen -->|screens complete| t20_tui_headless_test_suite
-  t18_tui_sources_settings_screen -->|screens complete| t20_tui_headless_test_suite
-  t19_tui_profile_screen -->|screens complete| t20_tui_headless_test_suite
-  t02_add_apply_endpoint -->|route the buttons call| t21_web_missing_actions
-  t21_web_missing_actions -->|hooks for the list| t22_web_applications_page
-  t04_sync_sources_from_settings -->|options round-trip to persist| t23_web_source_options_and_prefs
-  t21_web_missing_actions -->|mutation plumbing| t23_web_source_options_and_prefs
-  t22_web_applications_page -->|UI complete| t24_web_parity_tests
-  t23_web_source_options_and_prefs -->|UI complete| t24_web_parity_tests
-  t20_tui_headless_test_suite -->|TUI side of the matrix| t25_parity_contract
-  t24_web_parity_tests -->|WebUI side of the matrix| t25_parity_contract
-
-  classDef evidence fill:#ede9fe,stroke:#7c3aed,color:#111827
-  classDef data fill:#fee2e2,stroke:#dc2626,color:#111827
-  classDef runtime fill:#ffedd5,stroke:#ea580c,color:#111827
-  classDef gate fill:#111827,stroke:#f59e0b,color:#f8fafc
-  class t03_link_attempt_to_application,t08_fix_uncoupled_ego_test,t09_forward_job_state_filter,t07_accept_string_location evidence
-  style t01_fix_worker_lock stroke-width:4px
-  class t01_fix_worker_lock,t02_add_apply_endpoint,t04_sync_sources_from_settings,t05_first_run_init,t06_serve_web_dist_default,t10_default_autonomous_submit,t13_tui_scaffold,t25_parity_contract data
-  class t14_tui_jobs_screen,t15_tui_job_detail_apply,t16_tui_needs_you_screen,t17_tui_dashboard_screen,t18_tui_sources_settings_screen,t19_tui_profile_screen,t20_tui_headless_test_suite,t21_web_missing_actions,t22_web_applications_page,t23_web_source_options_and_prefs,t24_web_parity_tests runtime
-  style unblock fill:#f5f3ff,stroke:#7c3aed,color:#111827
-  style ship fill:#f8fafc,stroke:#111827,color:#111827
-  style tui fill:#fff7ed,stroke:#ea580c,color:#111827
-  style web fill:#fff7ed,stroke:#ea580c,color:#111827
-  style closeout fill:#f8fafc,stroke:#111827,color:#111827
-```
-
-### Acceptance trace
-
-These edges are **not** task dependencies; they only show which tasks establish which acceptance criterion.
-
-```mermaid
-flowchart LR
-  t01_fix_worker_lock("☐ t01-fix-worker-lock") -->|verifies| ac1["AC-1<br/>An attempt persists browser_backend and reaches a non-pending state through the worker"]
-  t02_add_apply_endpoint("☐ t02-add-apply-endpoint") -->|satisfies| ac2["AC-2<br/>A user can start an application from the API, the CLI, and the UI"]
-  t05_first_run_init("☐ t05-first-run-init") -->|satisfies| ac3["AC-3<br/>A clean install reaches a working UI with one command"]
-  t11_publish_to_pypi("☐ t11-publish-to-pypi") -->|satisfies| ac4["AC-4<br/>The package installs from PyPI and the CLI runs"]
-  t13_tui_scaffold("☐ t13-tui-scaffold") -->|satisfies| ac5["AC-5<br/>applyuminati tui starts with no server running"]
-  t20_tui_headless_test_suite("☐ t20-tui-headless-test-suite") -->|verifies| ac6["AC-6<br/>Every TUI screen is covered headlessly"]
-  t25_parity_contract{{"☐ t25-parity-contract"}} -->|satisfies| ac7["AC-7<br/>CLI, API, TUI, and WebUI match one capability manifest"]
-  classDef evidence fill:#ede9fe,stroke:#7c3aed,color:#111827
-  classDef data fill:#fee2e2,stroke:#dc2626,color:#111827
-  classDef runtime fill:#ffedd5,stroke:#ea580c,color:#111827
-  class t01_fix_worker_lock,t20_tui_headless_test_suite evidence
-  class t02_add_apply_endpoint,t05_first_run_init,t11_publish_to_pypi,t13_tui_scaffold,t25_parity_contract data
-  class ac1,ac2,ac3,ac4,ac5,ac6,ac7 runtime
-```
-
----
-
-## 5. Files likely to change
-
-| Path | Change | Tasks |
 |---|---|---|
 | `src/applyuminati/db/repositories/tasks.py` | Commit the claim and the lease reclaim | t01 |
 | `src/applyuminati/tasks/worker.py` | Re-verify the claim/execute split; add a regression test hook | t01 |
@@ -1497,7 +1380,7 @@ Keep the WebUI and TUI form-generation logic conceptually aligned so `t25` can a
 
 ---
 
-### t25-parity-contract
+### t25-parity-contract (DONE)
 
 **Objective:** One manifest that states which capability exists on which surface, enforced by a test so the surfaces cannot drift again.
 

@@ -25,6 +25,7 @@ from applyuminati.core.models.common import EmploymentType, RemoteMode, Seniorit
 from applyuminati.core.models.job import AtsVendor, SourceTier, VerificationState
 from applyuminati.core.models.scoring import Recommendation, ScoreDimension
 from applyuminati.core.registry import HealthState
+from applyuminati.core.settings import ExecutionMode
 from applyuminati.core.strategy import SearchStrategy
 
 ItemT = TypeVar("ItemT")
@@ -291,6 +292,22 @@ class DiscoverRequest(BaseModel):
     locations: list[str] = Field(default_factory=list)
     #: Run synchronously and return the finished run. Used by tests and the CLI.
     wait: bool = False
+
+
+class ApplyJobRequest(BaseModel):
+    model_config = _CFG
+
+    #: Left unset, the configured default applies. Recorded on the attempt, so
+    #: changing the setting later never rewrites what an attempt was allowed to do.
+    mode: ExecutionMode | None = None
+
+
+class ApplyJobResponse(BaseModel):
+    model_config = _CFG
+
+    attempt_id: str
+    state: str
+    driver: str
 
 
 class ScoreRequest(BaseModel):

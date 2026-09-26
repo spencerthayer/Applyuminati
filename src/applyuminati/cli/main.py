@@ -13,15 +13,19 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from rich import box
 from rich.console import Console
 from rich.table import Table
 
 from applyuminati import __version__
 from applyuminati.browser.host_protocol import PROTOCOL_VERSION, WEBSOCKET_PATH
+from applyuminati.core.errors import ApplyuminatiError
+from applyuminati.core.models.application import allowed_transitions
 from applyuminati.core.models.browser_host import HostConnectionState
 from applyuminati.core.registry import PluginMaturity
 from applyuminati.core.security import WeakPasswordError, hash_password
-from applyuminati.core.settings import get_settings
+from applyuminati.core.settings import ExecutionMode, get_settings
+from applyuminati.services.application_service import ApplicationService
 from applyuminati.services.capabilities import collect_capability_matrix
 from applyuminati.services.container import ServiceContainer, get_container
 
@@ -517,6 +521,94 @@ def jobs_score(
 
 
 # -- capabilities ---------------------------------------------------------
+
+
+applications_app = typer.Typer(help="Start and inspect applications.")
+app.add_typer(applications_app, name="applications")
+
+
+@applications_app.command("apply")
+def applications_apply(
+    job_id: str = typer.Argument(..., help="Job id to apply to"),
+    mode: str = typer.Option(
+        None, help="research_only or autonomous_submit. Defaults to the configured mode."
+    ),
+) -> None:
+    """Start an application for a job. This is the only way to begin applying."""
+    from applyuminati.services.attempt_service import AttemptService
+
+    settings = get_settings()
+    chosen = ExecutionMode(mode) if mode else settings.execution_mode
+
+    async def _run() -> Any:
+        container = _container()
+        async with container.repositories() as repos:
+            return await AttemptService(repos).start_for_job(
+                job_id=job_id, profile=None, mode=chosen
+            )
+
+    try:
+        attempt = _run_async(_run())
+    except ApplyuminatiError as exc:
+        typer.secho(f"{exc.message}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Started attempt {attempt.id} (driver={attempt.driver}, mode={chosen.value})")
+    typer.echo("Watch it in the TUI Needs You screen, or `applyuminati serve` and open the web UI.")
+
+
+@applications_app.command("list")
+def applications_list(
+    limit: int = typer.Option(20, help="Maximum results"),
+) -> None:
+    """List applications and the state each one is in."""
+
+    async def _run() -> Any:
+        container = _container()
+        async with container.repositories() as repos:
+            return await ApplicationService(repos).list(limit=limit)
+
+    views = _run_async(_run())
+    if not views.items:
+        typer.echo("No applications yet. Run `applyuminati jobs discover` then `jobs score`.")
+        return
+    table = Table(title="Applications", box=box.SIMPLE)
+    table.add_column("Id", no_wrap=True)
+    table.add_column("Company", no_wrap=True)
+    table.add_column("Title", overflow="fold")
+    table.add_column("State", no_wrap=True)
+    for view in views.items:
+        table.add_row(
+            view.application.id,
+            view.job.company,
+            view.job.title,
+            view.application.state.value,
+        )
+    console.print(table)
+
+
+@applications_app.command("show")
+def applications_show(
+    application_id: str = typer.Argument(..., help="Application id"),
+) -> None:
+    """Show one application and every legal transition from its current state."""
+
+    async def _run() -> Any:
+        container = _container()
+        async with container.repositories() as repos:
+            return await ApplicationService(repos).get(application_id)
+
+    try:
+        view = _run_async(_run())
+    except ApplyuminatiError as exc:
+        typer.secho(f"{exc.message}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"{view.job.company} — {view.job.title}")
+    typer.echo(f"  state:   {view.application.state.value}")
+    typer.echo(f"  job id:  {view.job.id}")
+    typer.echo(f"  apply:   {view.job.apply_url or '—'}")
+    allowed = [state.value for state in allowed_transitions(view.application.state)]
+    if allowed:
+        typer.echo(f"  actions: {', '.join(allowed)}")
 
 
 @app.command()

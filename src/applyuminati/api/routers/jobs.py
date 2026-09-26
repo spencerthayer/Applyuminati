@@ -6,8 +6,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from applyuminati.api.dependencies import get_container_dep, get_repositories
 from applyuminati.api.mappers import job_to_detail, job_to_summary
-from applyuminati.api.schemas import JobDetail, JobSummary, Page
-from applyuminati.core.errors import NotFoundError
+from applyuminati.api.schemas import ApplyJobRequest, ApplyJobResponse, JobDetail, JobSummary, Page
+from applyuminati.core.errors import (
+    ConfigurationError,
+    DuplicateActionError,
+    NotFoundError,
+)
 from applyuminati.core.models.common import RemoteMode
 from applyuminati.core.models.job import VerificationState
 from applyuminati.core.models.scoring import Recommendation
@@ -93,6 +97,34 @@ async def discover_jobs(
         "jobs_merged": run.stats.get("jobs_merged", 0),
         "failures": run.failures,
     }
+
+
+@router.post("/{job_id}/apply", response_model=ApplyJobResponse, status_code=201)
+async def apply_to_job(
+    job_id: str,
+    request: ApplyJobRequest,
+    container: ServiceContainer = Depends(get_container_dep),
+) -> ApplyJobResponse:
+    """Start an application for a job. The only way to begin applying."""
+    from applyuminati.services.attempt_service import AttemptService
+
+    mode = request.mode or container.settings.execution_mode
+    async with container.repositories() as repos:
+        try:
+            attempt = await AttemptService(repos).start_for_job(
+                job_id=job_id, profile=None, mode=mode
+            )
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=exc.message) from exc
+        except ConfigurationError as exc:
+            raise HTTPException(status_code=400, detail=exc.message) from exc
+        except DuplicateActionError as exc:
+            raise HTTPException(status_code=409, detail=exc.message) from exc
+    return ApplyJobResponse(
+        attempt_id=attempt.id,
+        state=attempt.workflow_state.value,
+        driver=attempt.driver,
+    )
 
 
 @router.post("/score")

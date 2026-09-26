@@ -17,7 +17,11 @@ from applyuminati.browser.base import BrowserSession, ControlOwner
 from applyuminati.browser.host_manager import BrowserHostManager
 from applyuminati.browser.host_protocol import HostCommand
 from applyuminati.core.clock import utcnow
-from applyuminati.core.errors import NotFoundError
+from applyuminati.core.errors import (
+    ConfigurationError,
+    DuplicateActionError,
+    NotFoundError,
+)
 from applyuminati.core.logging import get_logger
 from applyuminati.core.models.execution import (
     ApplicationAttempt,
@@ -146,6 +150,57 @@ class AttemptService:
             application_id=application_id,
             driver=driver_name,
             ats=detection.ats.value,
+        )
+        return attempt
+
+    async def start_for_job(
+        self,
+        *,
+        job_id: str,
+        profile: CareerProfile | None,
+        mode: ExecutionMode,
+    ) -> ApplicationAttempt:
+        """Create the attempt for a job and queue it. The only user entry point.
+
+        Job-centric because a job is what a user selects. The Application row is
+        ensured rather than required, so a job that has not been scored can
+        still be applied to. Re-entry is refused while an attempt for the same
+        job is still in flight, which is what keeps the submission idempotency
+        fingerprint meaningful.
+        """
+        job = await self._repos.jobs.get(job_id)
+        if job is None:
+            raise NotFoundError(f"job {job_id} not found", code="resource_gone.job")
+        if profile is None:
+            profile = await self._repos.profiles.get_active()
+        if profile is None:
+            raise ConfigurationError(
+                "import a career profile before applying",
+                code="configuration.profile_missing",
+            )
+
+        existing = await self._repos.attempts.active_for_job(job_id)
+        if existing is not None:
+            raise DuplicateActionError(
+                f"an application for this job is already in progress "
+                f"({existing.workflow_state.value}, attempt {existing.id})",
+                code="conflict.attempt_in_flight",
+            )
+
+        application = await self._repos.applications.ensure(job_id, profile.id)
+        attempt = await self.create(
+            application_id=application.id,
+            job=job,
+            profile=profile,
+            mode=mode,
+        )
+        await self.enqueue_resume(attempt)
+        log.info(
+            "attempt.started",
+            attempt_id=attempt.id,
+            job_id=job_id,
+            application_id=application.id,
+            mode=mode.value,
         )
         return attempt
 

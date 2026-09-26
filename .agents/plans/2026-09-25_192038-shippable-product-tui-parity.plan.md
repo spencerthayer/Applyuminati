@@ -8,97 +8,97 @@ todos:
     dependencies: []
   - id: t02-add-apply-endpoint
     content: Add the start-an-application service, API route, and CLI command
-    status: pending
+    status: completed
     dependencies:
       - t01-fix-worker-lock
   - id: t03-link-attempt-to-application
     content: Propagate a terminal attempt outcome to the Application state
-    status: pending
+    status: completed
     dependencies:
       - t01-fix-worker-lock
   - id: t04-sync-sources-from-settings
     content: Call sync_from_settings on startup so config.toml works
-    status: pending
+    status: completed
     dependencies: []
   - id: t05-first-run-init
     content: Make init migrate, write config.toml, and provision auth
-    status: pending
+    status: completed
     dependencies:
       - t04-sync-sources-from-settings
   - id: t06-serve-web-dist-default
     content: Serve the built SPA without manual configuration
-    status: pending
+    status: completed
     dependencies: []
   - id: t07-accept-string-location
     content: Accept a string basics.location in JSON Resume import
-    status: pending
+    status: completed
     dependencies: []
   - id: t08-fix-uncoupled-ego-test
     content: Make the ego-lite health test environment-independent
-    status: pending
+    status: completed
     dependencies: []
   - id: t09-forward-job-state-filter
     content: Forward the dropped state filter on the jobs list route
-    status: pending
+    status: completed
     dependencies: []
   - id: t10-default-autonomous-submit
     content: Switch the default execution mode to autonomous_submit
-    status: pending
+    status: completed
     dependencies:
       - t02-add-apply-endpoint
   - id: t11-publish-to-pypi
     content: Add a PyPI build and publish workflow
-    status: pending
+    status: completed
     dependencies:
       - t05-first-run-init
       - t10-default-autonomous-submit
   - id: t12-rewrite-first-run-docs
     content: Rewrite the README quick start and SECURITY posture
-    status: pending
+    status: completed
     dependencies:
       - t11-publish-to-pypi
   - id: t13-tui-scaffold
     content: Scaffold the Textual package, deps, and import contracts
-    status: pending
+    status: completed
     dependencies:
       - t02-add-apply-endpoint
       - t06-serve-web-dist-default
   - id: t14-tui-jobs-screen
     content: Build the TUI Jobs screen with filtering
-    status: pending
+    status: completed
     dependencies:
       - t13-tui-scaffold
   - id: t15-tui-job-detail-apply
     content: Build the TUI job detail screen with the apply action
-    status: pending
+    status: completed
     dependencies:
       - t14-tui-jobs-screen
       - t10-default-autonomous-submit
   - id: t16-tui-needs-you-screen
     content: Build the TUI Needs You human-handoff screen
-    status: pending
+    status: completed
     dependencies:
       - t13-tui-scaffold
       - t03-link-attempt-to-application
   - id: t17-tui-dashboard-screen
     content: Build the TUI Dashboard screen
-    status: pending
+    status: completed
     dependencies:
       - t13-tui-scaffold
   - id: t18-tui-sources-settings-screen
     content: Build the TUI Sources and Settings screens
-    status: pending
+    status: completed
     dependencies:
       - t13-tui-scaffold
       - t04-sync-sources-from-settings
   - id: t19-tui-profile-screen
     content: Build the TUI Profile screen
-    status: pending
+    status: completed
     dependencies:
       - t13-tui-scaffold
   - id: t20-tui-headless-test-suite
     content: Add the headless TUI test suite
-    status: pending
+    status: completed
     dependencies:
       - t15-tui-job-detail-apply
       - t16-tui-needs-you-screen
@@ -107,23 +107,23 @@ todos:
       - t19-tui-profile-screen
   - id: t21-web-missing-actions
     content: Expose discover, score, and apply in the WebUI
-    status: pending
+    status: completed
     dependencies:
       - t02-add-apply-endpoint
   - id: t22-web-applications-page
     content: Add the WebUI applications page and transitions
-    status: pending
+    status: completed
     dependencies:
       - t21-web-missing-actions
   - id: t23-web-source-options-and-prefs
     content: Add the WebUI source options form and profile preferences
-    status: pending
+    status: completed
     dependencies:
       - t04-sync-sources-from-settings
       - t21-web-missing-actions
   - id: t24-web-parity-tests
     content: Add WebUI tests for the newly exposed actions
-    status: pending
+    status: completed
     dependencies:
       - t22-web-applications-page
       - t23-web-source-options-and-prefs
@@ -215,12 +215,11 @@ If the same action fails again without new evidence, do not repeat it unchanged.
 
 | Field | Current state |
 |---|---|
-| Phase | Implementation in progress. 13 of 25 tasks complete and committed. |
-| Active task | Six TUI screen tasks (t14-t19) and the WebUI parity task (t21-t23) running in parallel as subagents. |
-| Last confirmed result | Suite **490 passed, 0 failed** at commit 1682603. t01-t04, t06-t13 done. Full quick start verified from an installed wheel in a clean Python 3.12 venv: `init` migrates to 4f2c1b90e7a1 and prints a generated password, a string-location JSON Resume imports, and discover -> score -> applications list works against a live Lever tenant configured only through config.toml. |
-| Current approach | Unchanged. Screens and the WebUI are delegated in parallel; the lead owns app.py, conftest, and the final wiring. |
-| Blockers / open decisions | PyPI project name, owner, and Trusted Publisher still need a human before the first real publish (t11). |
-| Next action | Collect the seven subagent results, wire the screens into `tui/app.py` navigation, run t20 (headless screen tests) and t24 (WebUI tests), then t25 (parity manifest). Then verify, open a PR, and run the review/CI loop. |
+| Phase | 24 of 25 tasks complete and committed. t25 (parity manifest) in progress. |
+| Active task | `t25-parity-contract`, delegated. |
+| Last confirmed result | **574 Python tests passed, 0 failed, 0 errors.** Web: **77 tests across 13 files**, typecheck, lint, and build all clean. `ruff format --check` 220 files clean, `ruff check` clean, `pyright` 0 errors, `lint-imports` 4 contracts kept. |
+| Current approach | Unchanged. The parity manifest is the last piece; then verify, open a PR, and run the review/CI loop. |
+| Blockers / open decisions | The first real PyPI publish still needs a human: create the project, configure the Trusted Publisher against the `pypi` environment, and tag. Not done here. |
 
 ---
 
@@ -232,19 +231,19 @@ The flowchart is the dependency authority. A `◐` or `☑` node with an edge fr
 flowchart TD
   subgraph unblock [Unblock - proven defects]
     t01_fix_worker_lock("☑ t01-fix-worker-lock<br/>Fix the worker database-is-locked deadlock")
-    t02_add_apply_endpoint("☐ t02-add-apply-endpoint<br/>Add the start-an-application service, route, and command")
-    t03_link_attempt_to_application("☐ t03-link-attempt-to-application<br/>Propagate a terminal attempt to Application state")
-    t04_sync_sources_from_settings("☐ t04-sync-sources-from-settings<br/>Call sync_from_settings on startup")
-    t05_first_run_init("☐ t05-first-run-init<br/>Make init migrate, write config, provision auth")
-    t06_serve_web_dist_default("☐ t06-serve-web-dist-default<br/>Serve the built SPA without configuration")
-    t07_accept_string_location("☐ t07-accept-string-location<br/>Accept a string basics.location")
-    t08_fix_uncoupled_ego_test("☐ t08-fix-uncoupled-ego-test<br/>Make the ego-lite health test portable")
-    t09_forward_job_state_filter("☐ t09-forward-job-state-filter<br/>Forward the dropped state filter")
-    t10_default_autonomous_submit("☐ t10-default-autonomous-submit<br/>Switch the default execution mode")
+    t02_add_apply_endpoint("☑ t02-add-apply-endpoint<br/>Add the start-an-application service, route, and command")
+    t03_link_attempt_to_application("☑ t03-link-attempt-to-application<br/>Propagate a terminal attempt to Application state")
+    t04_sync_sources_from_settings("☑ t04-sync-sources-from-settings<br/>Call sync_from_settings on startup")
+    t05_first_run_init("☑ t05-first-run-init<br/>Make init migrate, write config, provision auth")
+    t06_serve_web_dist_default("☑ t06-serve-web-dist-default<br/>Serve the built SPA without configuration")
+    t07_accept_string_location("☑ t07-accept-string-location<br/>Accept a string basics.location")
+    t08_fix_uncoupled_ego_test("☑ t08-fix-uncoupled-ego-test<br/>Make the ego-lite health test portable")
+    t09_forward_job_state_filter("☑ t09-forward-job-state-filter<br/>Forward the dropped state filter")
+    t10_default_autonomous_submit("☑ t10-default-autonomous-submit<br/>Switch the default execution mode")
   end
   subgraph ship [Ship]
-    t11_publish_to_pypi("☐ t11-publish-to-pypi<br/>Add a PyPI build and publish workflow")
-    t12_rewrite_first_run_docs("☐ t12-rewrite-first-run-docs<br/>Rewrite the README quick start and SECURITY")
+    t11_publish_to_pypi("☑ t11-publish-to-pypi<br/>Add a PyPI build and publish workflow")
+    t12_rewrite_first_run_docs("☑ t12-rewrite-first-run-docs<br/>Rewrite the README quick start and SECURITY")
   end
   subgraph tui [Textual TUI]
     t13_tui_scaffold{{"☐ t13-tui-scaffold<br/>Scaffold the Textual package and contracts"}}

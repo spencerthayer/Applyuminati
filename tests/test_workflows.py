@@ -192,3 +192,37 @@ def test_pypi_upload_step_is_gated_on_the_publish_input(pypi: dict[str, Any]) ->
     assert len(uploads) == 1, f"expected exactly one upload step, found {len(uploads)}"
     # A major version tag, not a floating branch: @master can be repointed.
     assert uploads[0]["uses"].endswith("/v1"), f"unpinned publish action: {uploads[0]['uses']}"
+
+
+def test_the_runtime_dependencies_include_what_the_code_imports() -> None:
+    """A dependency dropped by accident installs cleanly and fails at runtime.
+
+    This exists because `uvicorn[standard]` was removed from the dependency
+    list by a scripted edit that rewrote the whole block. `applyuminati serve`
+    imports it, so nothing local noticed until CI could not resolve the import.
+    """
+    import tomllib
+    from pathlib import Path
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text())
+    declared = " ".join(data["project"]["dependencies"])
+    # Every third-party module the package imports at module scope.
+    for module in (
+        "aiosqlite",
+        "alembic",
+        "fastapi",
+        "httpx",
+        "pydantic",
+        "pydantic-settings",
+        "rich",
+        "sqlalchemy",
+        "structlog",
+        "typer",
+        "uvicorn",
+        "websockets",
+    ):
+        assert module in declared, f"{module} is imported but not a declared dependency"
+    # The asyncio extra is load-bearing: without greenlet the wheel installs and
+    # then dies on the first import of applyuminati.db.
+    assert "sqlalchemy[asyncio]" in declared

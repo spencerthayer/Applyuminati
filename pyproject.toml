@@ -28,6 +28,9 @@ dependencies = [
   "rich>=14.2",
   "structlog>=24.4",
   "typer>=0.15",
+  # `serve` runs uvicorn, so it is a runtime dependency, not an extra. Dropping
+  # it installs cleanly and then fails on the first `applyuminati serve`.
+  "uvicorn[standard]>=0.34",
   # The asyncio extra, not bare sqlalchemy: the repositories use AsyncSession
   # throughout, and without greenlet the wheel installs cleanly and then dies
   # on the first import of applyuminati.db. The dev environment never caught

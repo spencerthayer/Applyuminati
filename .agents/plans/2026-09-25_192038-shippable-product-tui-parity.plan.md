@@ -215,11 +215,11 @@ If the same action fails again without new evidence, do not repeat it unchanged.
 
 | Field | Current state |
 |---|---|
-| Phase | **All 25 tasks complete and committed.** |
-| Active task | None. |
-| Last confirmed result | **584 Python tests passed, 0 failed, 0 errors.** Web: 77 tests, typecheck, lint, build clean. `ruff format --check` clean, `ruff check` clean, `pyright` 0 errors, `lint-imports` 4 kept. `make parity` regenerates `docs/parity.md` byte-identically. The manifest imports with Textual absent, verified in a clean no-extras venv. |
-| Current approach | Complete. |
-| Blockers / open decisions | None blocking. The first real PyPI publish needs a human: create the project, configure a Trusted Publisher against the `pypi` environment, and tag. 17 of 24 capabilities are missing on at least one surface; recorded in `docs/parity.md` as a product finding, not a failure. |
+| Phase | **All 25 tasks complete. PR #11 open, all CI green.** |
+| Active task | None. Awaiting human review. |
+| Last confirmed result | **585 Python tests passed, 0 failed, 0 errors.** Web 77 tests. ruff, pyright, import-linter clean. CI on PR #11: Python pass 2m22s, Web pass 22s, Docker pass 1m0s. PyPI and Release correctly skipping on a PR. |
+| Current approach | Complete. Not merged: merging needs explicit human authorisation. |
+| Blockers / open decisions | First real PyPI publish needs a human: create the project, configure a Trusted Publisher against the `pypi` environment, tag. No upload attempted. `docs/parity.md` records 17 of 24 capabilities missing on at least one surface. |
 
 |---|---|---|
 | `src/applyuminati/db/repositories/tasks.py` | Commit the claim and the lease reclaim | t01 |

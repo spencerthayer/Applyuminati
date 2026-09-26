@@ -18,6 +18,7 @@ from applyuminati.browser.selection import select_browser
 from applyuminati.core.errors import BackendUnavailableError, NotFoundError
 from applyuminati.core.logging import get_logger
 from applyuminati.core.models.execution import (
+    WORKFLOW_TERMINAL,
     ApplicationAttempt,
     AttemptEventKind,
     InterventionReason,
@@ -27,6 +28,7 @@ from applyuminati.core.models.job import Job
 from applyuminati.core.models.profile import CareerProfile
 from applyuminati.services.attempt_service import APPLICATION_ATTEMPT_KIND, AttemptService
 from applyuminati.services.container import Repositories, get_container
+from applyuminati.services.local_browser import LocalBrowserManager
 from applyuminati.tasks.handlers import HANDLER_REGISTRY, TaskContext, register_handler
 from applyuminati.tasks.queue import TaskQueue
 from applyuminati.tasks.worker import TaskWorker
@@ -96,7 +98,16 @@ async def _run(
     manager = get_container().browser_hosts
     session = await service.bind_session(attempt, manager=manager, session_factory=session_factory)
     if session is None:
-        return await _select_or_pause(attempt, job, driver, repos)
+        if attempt.browser_backend is None:
+            # Selection runs exactly once per attempt: the moment a backend is
+            # persisted, that decision is durable and every later run acquires
+            # it instead of re-selecting.
+            selected = await _select_or_pause(attempt, job, driver, repos)
+            if selected.get("selected_backend") is None:
+                return selected
+        session = await _acquire_local(attempt, repos)
+        if session is None:
+            return {"status": attempt.workflow_state.value, "attempt_id": attempt.id}
     driver_context = DriverContext(job=job, profile=profile, mode=attempt.submission_mode)
     updated = await service.run_step(attempt, session, driver_context, driver=driver)
     context.logger.info(
@@ -104,7 +115,44 @@ async def _run(
         attempt_id=updated.id,
         workflow_state=updated.workflow_state.value,
     )
-    return {"status": updated.workflow_state.value, "attempt_id": updated.id}
+    result = {"status": updated.workflow_state.value, "attempt_id": updated.id}
+    if attempt.browser_backend:
+        result["selected_backend"] = attempt.browser_backend
+    if updated.workflow_state in WORKFLOW_TERMINAL:
+        # Host-backed sessions are the host's to keep; the manager only
+        # closes what it owns, so this is a no-op on the host path.
+        await _local_manager().close(attempt.id)
+    return result
+
+
+async def _acquire_local(attempt: ApplicationAttempt, repos: Repositories) -> BrowserSession | None:
+    """Acquire the locally selected session, or open a durable refusal.
+
+    A resumed attempt with a recorded backend goes straight here, never back
+    through selection: the manager re-checks the persisted snapshot against
+    the backend's declared capabilities and refuses rather than substitutes.
+    """
+    try:
+        session = await _local_manager().acquire(attempt)
+    except BackendUnavailableError as exc:
+        snapshot = attempt.browser_requirements or {}
+        needs_handoff = BrowserCapability.HUMAN_HANDOFF.value in snapshot.get("required", [])
+        attempt.open_intervention(
+            InterventionReason.USER_REVIEW,
+            f"The selected browser cannot run this application: {exc}",
+            requires_browser_handoff=needs_handoff,
+        )
+        attempt.workflow_state = WorkflowState.WAITING_FOR_HUMAN
+        await repos.attempts.save(attempt)
+        return None
+    attempt.browser_session_id = attempt.id
+    await repos.attempts.save(attempt)
+    return session
+
+
+def _local_manager() -> LocalBrowserManager:
+    """The process-owned local browser manager for the application worker."""
+    return get_container().local_browsers
 
 
 async def _select_or_pause(
